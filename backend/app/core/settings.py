@@ -69,6 +69,20 @@ class Settings(BaseSettings):
     bm25_top_k: int = 30
     final_top_k: int = 5
     rrf_k: int = 60
+    # Dense contribution to RRF when the deterministic hash embedder is active.
+    #
+    # Measured, not assumed: sweeping this weight over the 145 answerable
+    # benchmark questions showed S@1 falling monotonically from 0.745 at weight
+    # 0.0 to 0.634 at weight 1.0. The hash embedder is a signed bag-of-words
+    # cosine with no IDF weighting, so it is a strictly weaker lexical signal
+    # than BM25 and fusing it only adds noise. It is therefore disabled, and the
+    # ablation table reports hybrid == bm25 for that configuration rather than
+    # pretending otherwise. With a real sentence-transformer both default to 1.0.
+    dense_fusion_weight_fallback: float = 0.0
+    # Dense similarity weight inside the feature reranker. Same measurement,
+    # same reasoning: 0.0 scored MRR 0.789 against 0.780 at 0.34.
+    reranker_dense_weight: float = 0.34
+    reranker_dense_weight_fallback: float = 0.0
     reranker: str = "feature"  # feature | cross_encoder | none
     max_chunk_tokens: int = 450
     chunk_overlap_ratio: float = 0.15

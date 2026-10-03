@@ -16,7 +16,10 @@ from typing import Iterable
 from ..core.settings import settings
 
 _HEADING_RE = re.compile(r"^(#{1,6})\s+(.*)$")
-_WS_RE = re.compile(r"[ \t]+")
+# Prose in these documents is wrapped at ~80 columns, so a sentence can span a
+# line break. Collapsing *all* whitespace runs (including newlines) keeps a
+# chunk readable and makes phrase matching reliable.
+_WS_RE = re.compile(r"\s+")
 
 
 @dataclass

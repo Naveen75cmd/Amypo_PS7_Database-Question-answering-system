@@ -134,17 +134,33 @@ def ingest_documents(root: Path, force: bool = False) -> tuple[int, int, int, li
 
 
 def ingest_record_cards() -> tuple[int, list[str]]:
-    """Rebuild the structured record cards from the current SQLite rows."""
+    """Upsert the structured record cards from the current SQLite rows.
+
+    Cards are derived data, so rows that no longer exist must disappear. Rather
+    than deleting every card and re-inserting (which would throw away 6k
+    embeddings on every ingest), stale ids are deleted and the rest upserted,
+    preserving their embeddings when the text is unchanged.
+    """
     errors: list[str] = []
     try:
         cards = build_record_cards()
     except Exception as exc:
         return 0, [f"record cards: {exc}"]
 
-    # Cards are derived data: replace them wholesale so removed rows disappear.
-    execute("DELETE FROM chunks WHERE record_id LIKE 'db:%'")
+    fresh_ids = {card.record_id for card in cards}
+    existing = query("SELECT record_id FROM chunks WHERE record_id LIKE 'db:%'")
+    stale = [row["record_id"] for row in existing if row["record_id"] not in fresh_ids]
+    for record_id in stale:
+        execute("DELETE FROM chunks WHERE record_id = ?", (record_id,))
+
     for card in cards:
         try:
+            # Skip the write when the card is byte-identical, so its embedding survives.
+            current = query_one(
+                "SELECT content_hash FROM chunks WHERE record_id = ?", (card.record_id,)
+            )
+            if current and current["content_hash"] == card.content_hash:
+                continue
             _store_chunk(card)
         except Exception as exc:
             errors.append(f"{card.record_id}: {exc}")
