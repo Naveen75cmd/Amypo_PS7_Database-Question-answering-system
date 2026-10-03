@@ -1,0 +1,699 @@
+openapi: 3.1.0
+info:
+  title: AMYPO Campus Assistant API
+  version: 0.1.0
+  description: >
+    Fully offline Database Question-Answering System (PS7) with an integrated
+    low-cost AI request router (PS1) and a deterministic placement matching
+    engine. No endpoint in this document performs an outbound network call; the
+    `cloud_api` route is a local simulator.
+  contact:
+    name: Team Tech Titans
+    url: https://github.com/team-tech-titans/amypo-campus-assistant
+servers:
+  - url: http://127.0.0.1:8000/api/v1
+    description: Local development
+tags:
+  - name: qa
+    description: Grounded question answering (PS7)
+  - name: router
+    description: Request routing decisions (PS1)
+  - name: monitor
+    description: Real-time resource monitoring and metrics (PS1)
+  - name: placement
+    description: Eligibility, matching and skill gaps (PS7)
+  - name: ingest
+    description: Document and structured-data ingestion
+  - name: eval
+    description: Benchmark evaluation harness
+  - name: health
+    description: Component health
+
+paths:
+  /health:
+    get:
+      tags: [health]
+      summary: Component health
+      operationId: getHealth
+      responses:
+        "200":
+          description: Health report
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/HealthResponse" }
+
+  /ask:
+    post:
+      tags: [qa]
+      summary: Answer a question from AMYPO records with citations
+      operationId: askQuestion
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: "#/components/schemas/AskRequest" }
+            examples:
+              factoid:
+                value:
+                  question: What is the minimum attendance required to sit exams?
+                  user_id: S102
+              personal:
+                value:
+                  question: What is my attendance in Data Structures?
+                  user_id: S102
+      responses:
+        "200":
+          description: Grounded answer, or an abstention with the closest sources
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/AskResponse" }
+              examples:
+                grounded:
+                  value:
+                    answer: You need at least 75% attendance to sit for exams [S1].
+                    sources:
+                      - record_id: "doc:attendance-policy#2"
+                        snippet: Students must maintain a minimum of 75% attendance in each course to be eligible for end-semester examinations.
+                    confidence: 0.86
+                    route: local_model
+                    trace_id: 8f3c1a2b
+                    degraded: false
+                    abstained: false
+        "422": { description: Validation error }
+        "503": { description: QA pipeline not yet available }
+
+  /ask/trace/{request_id}:
+    get:
+      tags: [qa]
+      summary: Full reasoning trace for a previous request
+      operationId: getTrace
+      parameters:
+        - name: request_id
+          in: path
+          required: true
+          schema: { type: string }
+      responses:
+        "200":
+          description: Real pipeline stages with real timings
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/TraceResponse" }
+        "404": { description: Unknown request id }
+
+  /route:
+    post:
+      tags: [router]
+      summary: Choose the cheapest adequate path and optionally run it
+      operationId: routeRequest
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: "#/components/schemas/RouteRequest" }
+            examples:
+              simple:
+                value: { query: "What is the fee refund policy?", complexity_hint: low }
+      responses:
+        "200":
+          description: Routing decision with one-sentence reasoning
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/RouteResponse" }
+        "422": { description: Validation error }
+
+  /resource-status:
+    get:
+      tags: [monitor]
+      summary: Live RAM, CPU, bandwidth and simulated-cloud quota
+      operationId: getResourceStatus
+      responses:
+        "200":
+          description: Current resource snapshot
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/ResourceStatus" }
+
+  /metrics:
+    get:
+      tags: [monitor]
+      summary: Aggregate quality and cost metrics
+      operationId: getMetrics
+      responses:
+        "200":
+          description: Metrics derived from the query log and router decisions
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/MetricsResponse" }
+
+  /router/decisions:
+    get:
+      tags: [monitor]
+      summary: Router decision log with reasoning
+      operationId: listDecisions
+      parameters:
+        - name: limit
+          in: query
+          schema: { type: integer, default: 50, maximum: 500 }
+        - name: route
+          in: query
+          schema: { $ref: "#/components/schemas/Route" }
+      responses:
+        "200":
+          description: Decision log, newest first
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/DecisionsResponse" }
+
+  /simulate:
+    post:
+      tags: [monitor]
+      summary: Replay a resource scenario and observe routing changes
+      operationId: simulate
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: "#/components/schemas/SimulateRequest" }
+            examples:
+              ramCrash:
+                value: { scenario: ram_crash, steps: 8, query: "Explain the placement policy" }
+      responses:
+        "200":
+          description: Per-step decisions and a summary
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/SimulateResponse" }
+
+  /ingest:
+    post:
+      tags: [ingest]
+      summary: Ingest documents and structured rows
+      operationId: ingest
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: "#/components/schemas/IngestRequest" }
+      responses:
+        "200":
+          description: Ingestion counts
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/IngestResponse" }
+
+  /placement/eligibility:
+    get:
+      tags: [placement]
+      summary: Deterministic per-criterion eligibility
+      operationId: getEligibility
+      parameters:
+        - { name: student_id, in: query, schema: { type: string }, example: S102 }
+        - { name: company, in: query, schema: { type: string }, example: Zoho }
+        - { name: role, in: query, schema: { type: string }, example: SDE }
+        - { name: role_id, in: query, schema: { type: integer } }
+      responses:
+        "200":
+          description: Eligibility results with per-criterion detail
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/EligibilityResponse" }
+
+  /placement/match:
+    post:
+      tags: [placement]
+      summary: Rank eligible candidates for a role
+      operationId: matchCandidates
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: "#/components/schemas/MatchRequest" }
+            examples:
+              zoho:
+                value: { company: Zoho, role: SDE, top_n: 5 }
+      responses:
+        "200":
+          description: Ranked candidates, contributing factors and closest misses
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/MatchResponse" }
+
+  /placement/skill-gap/{student_id}:
+    get:
+      tags: [placement]
+      summary: Missing skills and an ordered learning path
+      operationId: getSkillGap
+      parameters:
+        - { name: student_id, in: path, required: true, schema: { type: string } }
+        - { name: company, in: query, schema: { type: string } }
+        - { name: role, in: query, schema: { type: string } }
+      responses:
+        "200":
+          description: Skill gaps with citable suggestions
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/SkillGapResponse" }
+
+  /placement/what-if:
+    post:
+      tags: [placement]
+      summary: Recompute eligibility with overrides, without persisting
+      operationId: whatIf
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: "#/components/schemas/WhatIfRequest" }
+            examples:
+              cgpa:
+                value: { student_id: S102, cgpa: 7.5, skill_levels: { docker: 3 } }
+      responses:
+        "200":
+          description: Which roles open up or close under the overrides
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/WhatIfResponse" }
+
+  /eval/run:
+    post:
+      tags: [eval]
+      summary: Run the benchmark suite
+      operationId: runEval
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: "#/components/schemas/EvalRunRequest" }
+      responses:
+        "200":
+          description: Benchmark metrics and the report path
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/EvalRunResponse" }
+
+components:
+  schemas:
+    Route:
+      type: string
+      enum: [cache, local_model, offline_fallback, cloud_api]
+      description: >
+        cache = semantic cache hit; local_model = full RAG with the local LLM;
+        offline_fallback = extractive answer with no LLM; cloud_api = simulated
+        quota-limited path (no real network call).
+
+    Intent:
+      type: string
+      enum:
+        [policy_lookup, personal_record, aggregate_stat, placement_eligibility,
+         skill_gap, candidate_recommendation, general]
+
+    Complexity: { type: string, enum: [low, medium, high] }
+    Role: { type: string, enum: [student, staff] }
+
+    Source:
+      type: object
+      required: [record_id, snippet]
+      properties:
+        record_id:
+          type: string
+          description: Stable id, e.g. doc:attendance-policy#3 or db:students:S102
+        snippet:
+          type: string
+          maxLength: 400
+          description: Verbatim supporting text (<=240 characters)
+
+    Criterion:
+      type: object
+      required: [name, required, actual, passed]
+      properties:
+        name: { type: string }
+        required: {}
+        actual: {}
+        passed: { type: boolean }
+        gap: { type: [string, "null"] }
+
+    AskRequest:
+      type: object
+      required: [question]
+      properties:
+        question: { type: string, minLength: 1 }
+        user_id: { type: [string, "null"], example: S102 }
+        role: { $ref: "#/components/schemas/Role" }
+        top_k: { type: [integer, "null"] }
+        complexity_hint: { anyOf: [{ $ref: "#/components/schemas/Complexity" }, { type: "null" }] }
+
+    AskResponse:
+      type: object
+      required: [answer, sources, confidence]
+      additionalProperties: false
+      properties:
+        answer: { type: string }
+        sources:
+          type: array
+          items: { $ref: "#/components/schemas/Source" }
+        confidence: { type: number, minimum: 0, maximum: 1 }
+        route: { anyOf: [{ $ref: "#/components/schemas/Route" }, { type: "null" }] }
+        trace_id: { type: [string, "null"] }
+        degraded: { type: boolean, default: false }
+        abstained: { type: boolean, default: false }
+        latency_ms: { type: [number, "null"] }
+        estimated_cost: { type: [number, "null"], description: Cost in INR }
+
+    HealthComponent:
+      type: object
+      required: [status]
+      properties:
+        status: { type: string, enum: [ok, degraded, down, not_loaded] }
+        detail: { type: [string, "null"] }
+
+    HealthResponse:
+      type: object
+      required: [status, version, components]
+      properties:
+        status: { type: string, enum: [ok, degraded] }
+        version: { type: string }
+        components:
+          type: object
+          additionalProperties: { $ref: "#/components/schemas/HealthComponent" }
+        versions:
+          type: object
+          additionalProperties: { type: string }
+
+    RouteRequest:
+      type: object
+      required: [query]
+      properties:
+        request_id: { type: [string, "null"] }
+        query: { type: string, minLength: 1 }
+        complexity_hint: { anyOf: [{ $ref: "#/components/schemas/Complexity" }, { type: "null" }] }
+        user_id: { type: [string, "null"] }
+        role: { $ref: "#/components/schemas/Role" }
+        execute: { type: boolean, default: true }
+
+    RouteResponse:
+      type: object
+      required: [request_id, routed_to, reasoning, latency_ms, estimated_cost]
+      additionalProperties: false
+      properties:
+        request_id: { type: string }
+        routed_to: { $ref: "#/components/schemas/Route" }
+        reasoning: { type: string }
+        latency_ms: { type: number }
+        estimated_cost: { type: number, description: INR }
+        answer: { type: [string, "null"] }
+        sources:
+          type: array
+          items: { $ref: "#/components/schemas/Source" }
+        confidence: { type: [number, "null"] }
+        complexity: { anyOf: [{ $ref: "#/components/schemas/Complexity" }, { type: "null" }] }
+        degraded: { type: boolean }
+        resource_snapshot: { anyOf: [{ $ref: "#/components/schemas/ResourceStatus" }, { type: "null" }] }
+
+    ResourceStatus:
+      type: object
+      required: [ram_available_mb, cpu_load_pct, bandwidth_kbps, api_quota_remaining]
+      additionalProperties: false
+      properties:
+        ram_available_mb: { type: integer }
+        cpu_load_pct: { type: number }
+        bandwidth_kbps: { type: integer }
+        api_quota_remaining: { type: integer }
+        ollama_loaded: { type: boolean }
+        ollama_status: { type: string }
+        ollama_last_latency_ms: { type: [number, "null"] }
+        bandwidth_scenario: { type: string }
+        sampled_at: { type: [string, "null"] }
+
+    TraceStep:
+      type: object
+      required: [id, title, status]
+      properties:
+        id: { type: string }
+        title: { type: string }
+        status: { type: string, enum: [done, active, pending, failed] }
+        detail: { type: [string, "null"] }
+        items: { type: array, items: { type: string } }
+        duration_ms: { type: [number, "null"] }
+        started_at: { type: [string, "null"] }
+
+    TraceClaim:
+      type: object
+      required: [text, supported, score]
+      properties:
+        text: { type: string }
+        supported: { type: boolean }
+        score: { type: number }
+        evidence_record_id: { type: [string, "null"] }
+        evidence_snippet: { type: [string, "null"] }
+        reason: { type: [string, "null"] }
+
+    TraceResponse:
+      type: object
+      required: [request_id, question]
+      properties:
+        request_id: { type: string }
+        question: { type: string }
+        answer: { type: [string, "null"] }
+        route: { anyOf: [{ $ref: "#/components/schemas/Route" }, { type: "null" }] }
+        confidence: { type: [number, "null"] }
+        abstained: { type: boolean }
+        degraded: { type: boolean }
+        intent: { anyOf: [{ $ref: "#/components/schemas/Intent" }, { type: "null" }] }
+        entities: { type: object, additionalProperties: true }
+        complexity: { anyOf: [{ $ref: "#/components/schemas/Complexity" }, { type: "null" }] }
+        steps: { type: array, items: { $ref: "#/components/schemas/TraceStep" } }
+        claims: { type: array, items: { $ref: "#/components/schemas/TraceClaim" } }
+        sources: { type: array, items: { $ref: "#/components/schemas/Source" } }
+        retrieval: { type: array, items: { type: object, additionalProperties: true } }
+        reasoning: { type: [string, "null"] }
+        created_at: { type: [string, "null"] }
+
+    IngestRequest:
+      type: object
+      properties:
+        path: { type: [string, "null"], description: Defaults to data/raw }
+        force: { type: boolean, default: false }
+
+    IngestResponse:
+      type: object
+      required: [documents, chunks, records, skipped_unchanged, duration_ms]
+      properties:
+        documents: { type: integer }
+        chunks: { type: integer }
+        records: { type: integer }
+        skipped_unchanged: { type: integer }
+        duration_ms: { type: number }
+        errors: { type: array, items: { type: string } }
+
+    EligibilityQuery:
+      type: object
+      properties:
+        student_id: { type: [string, "null"] }
+        company: { type: [string, "null"] }
+        role: { type: [string, "null"] }
+        role_id: { type: [integer, "null"] }
+
+    EligibilityResult:
+      type: object
+      required: [student_id, student_name, company, role, role_id, eligible, criteria]
+      properties:
+        student_id: { type: string }
+        student_name: { type: string }
+        company: { type: string }
+        role: { type: string }
+        role_id: { type: integer }
+        eligible: { type: boolean }
+        criteria: { type: array, items: { $ref: "#/components/schemas/Criterion" } }
+        failing: { type: array, items: { type: string } }
+        suitability: { type: [number, "null"] }
+        factors: { type: array, items: { type: object, additionalProperties: true } }
+        sources: { type: array, items: { $ref: "#/components/schemas/Source" } }
+
+    EligibilityResponse:
+      type: object
+      required: [results, total]
+      properties:
+        results: { type: array, items: { $ref: "#/components/schemas/EligibilityResult" } }
+        total: { type: integer }
+
+    MatchRequest:
+      type: object
+      properties:
+        role_id: { type: [integer, "null"] }
+        company: { type: [string, "null"] }
+        role: { type: [string, "null"] }
+        top_n: { type: integer, default: 5 }
+        department: { type: [string, "null"] }
+
+    MatchResponse:
+      type: object
+      required: [company, role, role_id, candidates, closest_misses]
+      properties:
+        company: { type: string }
+        role: { type: string }
+        role_id: { type: integer }
+        weights: { type: object, additionalProperties: { type: number } }
+        candidates: { type: array, items: { $ref: "#/components/schemas/EligibilityResult" } }
+        closest_misses: { type: array, items: { $ref: "#/components/schemas/EligibilityResult" } }
+        sources: { type: array, items: { $ref: "#/components/schemas/Source" } }
+
+    SkillGapItem:
+      type: object
+      required: [skill, category, current_level, required_level, severity]
+      properties:
+        skill: { type: string }
+        category: { type: string }
+        current_level: { type: integer }
+        required_level: { type: integer }
+        severity: { type: string, enum: [blocking, weak, ok] }
+        suggestions: { type: array, items: { type: object, additionalProperties: true } }
+
+    LearningStep:
+      type: object
+      required: [order, title, kind, effort_weeks]
+      properties:
+        order: { type: integer }
+        title: { type: string }
+        kind: { type: string, enum: [module, skill, tool] }
+        effort_weeks: { type: number }
+        record_id: { type: [string, "null"] }
+        snippet: { type: [string, "null"] }
+
+    SkillGapResponse:
+      type: object
+      required: [student_id, student_name, gaps, learning_path]
+      properties:
+        student_id: { type: string }
+        student_name: { type: string }
+        target_role: { type: [string, "null"] }
+        company: { type: [string, "null"] }
+        gaps: { type: array, items: { $ref: "#/components/schemas/SkillGapItem" } }
+        learning_path: { type: array, items: { $ref: "#/components/schemas/LearningStep" } }
+        sources: { type: array, items: { $ref: "#/components/schemas/Source" } }
+
+    WhatIfRequest:
+      type: object
+      required: [student_id]
+      properties:
+        student_id: { type: string }
+        cgpa: { type: [number, "null"] }
+        attendance_pct: { type: [number, "null"] }
+        backlogs: { type: [integer, "null"] }
+        communication_score: { type: [number, "null"] }
+        project_count: { type: [integer, "null"] }
+        skill_levels: { type: object, additionalProperties: { type: integer } }
+
+    WhatIfResponse:
+      type: object
+      required: [student_id, baseline_eligible, projected_eligible, opened_up, lost]
+      properties:
+        student_id: { type: string }
+        baseline_eligible: { type: array, items: { type: string } }
+        projected_eligible: { type: array, items: { type: string } }
+        opened_up: { type: array, items: { type: string } }
+        lost: { type: array, items: { type: string } }
+        per_role: { type: array, items: { type: object, additionalProperties: true } }
+
+    RouterDecision:
+      type: object
+      required: [request_id, query, routed_to, reasoning, latency_ms, estimated_cost, always_cloud_cost]
+      properties:
+        request_id: { type: string }
+        query: { type: string }
+        routed_to: { $ref: "#/components/schemas/Route" }
+        reasoning: { type: string }
+        complexity: { anyOf: [{ $ref: "#/components/schemas/Complexity" }, { type: "null" }] }
+        intent: { anyOf: [{ $ref: "#/components/schemas/Intent" }, { type: "null" }] }
+        latency_ms: { type: number }
+        estimated_cost: { type: number }
+        always_cloud_cost: { type: number }
+        ram_available_mb: { type: [integer, "null"] }
+        bandwidth_kbps: { type: [integer, "null"] }
+        api_quota_remaining: { type: [integer, "null"] }
+        created_at: { type: [string, "null"] }
+
+    DecisionsResponse:
+      type: object
+      required: [decisions, total]
+      properties:
+        decisions: { type: array, items: { $ref: "#/components/schemas/RouterDecision" } }
+        total: { type: integer }
+
+    MetricsResponse:
+      type: object
+      required:
+        [total_requests, cache_hit_rate, requests_by_route, latency_p50_ms, latency_p95_ms,
+         cumulative_cost_inr, always_cloud_cost_inr, savings_inr, savings_pct,
+         abstention_rate, avg_confidence, groundedness_avg]
+      properties:
+        total_requests: { type: integer }
+        cache_hit_rate: { type: number }
+        requests_by_route: { type: object, additionalProperties: { type: integer } }
+        latency_p50_ms: { type: object, additionalProperties: { type: number } }
+        latency_p95_ms: { type: object, additionalProperties: { type: number } }
+        cumulative_cost_inr: { type: number }
+        always_cloud_cost_inr: { type: number }
+        savings_inr: { type: number }
+        savings_pct: { type: number }
+        abstention_rate: { type: number }
+        avg_confidence: { type: number }
+        groundedness_avg: { type: number }
+        routing_agreement: { type: [number, "null"] }
+        resource_series: { type: array, items: { type: object, additionalProperties: true } }
+
+    SimulateRequest:
+      type: object
+      properties:
+        scenario:
+          type: string
+          enum:
+            [stable, ram_crash, bandwidth_degrading, bandwidth_flapping,
+             quota_exhausted, ollama_crash, offline, recovery]
+          default: stable
+        steps: { type: integer, default: 8 }
+        query: { type: string, default: "What is the attendance policy?" }
+        reset: { type: boolean, default: true }
+
+    SimulateResponse:
+      type: object
+      required: [scenario, steps, summary]
+      properties:
+        scenario: { type: string }
+        steps: { type: array, items: { type: object, additionalProperties: true } }
+        summary: { type: object, additionalProperties: true }
+
+    EvalRunRequest:
+      type: object
+      properties:
+        limit: { type: [integer, "null"] }
+        kinds: { type: [array, "null"], items: { type: string } }
+        write_report: { type: boolean, default: true }
+
+    EvalRunResponse:
+      type: object
+      required:
+        [run_id, total, accuracy, groundedness, hallucination_rate,
+         abstention_rate_unanswerable, precision_at_1, precision_at_3, precision_at_5,
+         recall_at_k, mrr, cumulative_cost_inr, always_cloud_cost_inr, savings_pct,
+         latency_p50_ms, latency_p95_ms, peak_ram_mb]
+      properties:
+        run_id: { type: string }
+        total: { type: integer }
+        accuracy: { type: number }
+        groundedness: { type: number }
+        hallucination_rate: { type: number }
+        abstention_rate_unanswerable: { type: number }
+        precision_at_1: { type: number }
+        precision_at_3: { type: number }
+        precision_at_5: { type: number }
+        recall_at_k: { type: number }
+        mrr: { type: number }
+        routing_agreement: { type: [number, "null"] }
+        cumulative_cost_inr: { type: number }
+        always_cloud_cost_inr: { type: number }
+        savings_pct: { type: number }
+        latency_p50_ms: { type: number }
+        latency_p95_ms: { type: number }
+        peak_ram_mb: { type: number }
+        report_path: { type: [string, "null"] }
+        per_kind: { type: object, additionalProperties: true }

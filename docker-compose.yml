@@ -1,0 +1,50 @@
+# `docker compose up` is the only command needed for the submission demo.
+# Memory limits below add up to well under the 8 GB budget.
+
+services:
+  backend:
+    build:
+      context: .
+      dockerfile: backend/Dockerfile
+    ports:
+      - "8000:8000"
+    environment:
+      AMYPO_DB_PATH: /data/amypo.db
+      AMYPO_OLLAMA_BASE_URL: http://ollama:11434
+      AMYPO_ALLOW_REAL_MODELS: "true"
+    volumes:
+      - ./data:/data
+      - ./docs:/docs
+    mem_limit: 2g
+    depends_on:
+      - ollama
+    healthcheck:
+      test: ["CMD", "python", "-c", "import urllib.request;urllib.request.urlopen('http://127.0.0.1:8000/api/v1/health')"]
+      interval: 15s
+      timeout: 5s
+      retries: 5
+
+  frontend:
+    build:
+      context: ./frontend
+      dockerfile: Dockerfile
+    ports:
+      - "3000:3000"
+    environment:
+      NEXT_PUBLIC_API_URL: http://backend:8000
+    mem_limit: 1g
+    depends_on:
+      - backend
+
+  ollama:
+    image: ollama/ollama:latest
+    ports:
+      - "11434:11434"
+    volumes:
+      # Pre-bake models for offline use:
+      #   docker run --rm -v amypo_ollama:/root/.ollama ollama/ollama pull phi3:mini
+      - amypo_ollama:/root/.ollama
+    mem_limit: 4g
+
+volumes:
+  amypo_ollama:
