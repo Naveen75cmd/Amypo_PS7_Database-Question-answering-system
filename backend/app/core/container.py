@@ -22,7 +22,10 @@ if TYPE_CHECKING:  # pragma: no cover
 
 class Container:
     def __init__(self) -> None:
-        self._lock = threading.Lock()
+        # Reentrant: a builder calls ``get`` for its own dependencies while the
+        # lock is held (``_build_router`` -> index/cache/monitor/classifier), and
+        # a plain Lock would deadlock on the first such nested lookup.
+        self._lock = threading.RLock()
         self._cache: dict[str, Any] = {}
         self._builders: dict[str, Any] = {
             "index": self._build_index,

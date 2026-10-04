@@ -474,6 +474,47 @@ class AskPipeline:
     # ------------------------------------------------------------------
 
     @staticmethod
+    def cached_result(
+        request_id: str,
+        question: str,
+        answer: str,
+        sources: list[Source],
+        confidence: float,
+        route: str | None,
+        latency_ms: float,
+    ) -> PipelineResult:
+        """A minimal trace for a semantic-cache hit.
+
+        A cache hit does no retrieval and no generation, but the UI still expects
+        a trace, so this builds one honest stage that says exactly that.
+        """
+        stage = Stage("cache", "Served from the semantic cache")
+        stage.finish(detail="cache hit; no retrieval or generation was needed", status="done")
+        understanding = understand_query(question)
+        report = GroundingReport(
+            claims=[], groundedness=1.0, confidence=confidence, abstained=False,
+            supported_claims=0, total_claims=0,
+        )
+        return PipelineResult(
+            request_id=request_id,
+            question=question,
+            answer=answer,
+            sources=sources,
+            confidence=confidence,
+            abstained=False,
+            degraded=False,
+            intent=understanding.intent,
+            entities=understanding.entities,
+            complexity=None,
+            understanding=understanding,
+            retrieval=[],
+            grounding=report,
+            steps=[stage],
+            latency_ms=latency_ms,
+            route=route,
+        )
+
+    @staticmethod
     def persist(result: PipelineResult, user_id: str | None, role: str) -> None:
         """Write the query log row the trace endpoint reads back."""
         try:
