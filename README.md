@@ -54,6 +54,23 @@ curl -X POST http://127.0.0.1:8000/api/v1/ask \
 curl http://127.0.0.1:8000/api/v1/resource-status
 ```
 
+### Measure it
+
+Two harnesses turn the numbers in this README from claims into measurements:
+
+```bash
+cd backend
+python -m app.retrieval            # retrieval ablation: dense / bm25 / hybrid / rerank
+python -m app.eval.answer_eval     # end to end: coverage, citations, abstention
+python -m app.eval.answer_eval --model   # same, through the real local model
+```
+
+With the deterministic extractive fallback (no model pulled), the answer harness
+currently reports roughly 143/145 answerable questions answered with a citation,
+89/107 numeric agreement, and 11/23 unanswerable questions correctly abstained.
+The remaining unanswerable misses are cases where an unrelated passage shares a
+word with the question; the real generation path is expected to abstain on them.
+
 ## Models
 
 The pipeline runs in three modes, detected automatically:

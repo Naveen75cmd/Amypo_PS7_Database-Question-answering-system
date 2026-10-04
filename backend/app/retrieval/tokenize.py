@@ -21,6 +21,13 @@ STOPWORDS = frozenset(
     each few more most other some such no nor not only own same so too very can
     will just should now of in on at to for with from by about as into over after
     before between under above please tell give show find get
+
+    additionally according per also however therefore thus furthermore moreover
+    specifically involved regarding mentioned separate one there also must may
+    might shall would could cannot onto without during again further once here
+    itself ourselves themselves myself yourself himself herself within among along
+    across behind beyond despite except inside outside toward towards until upon
+    whether while whose why yes yet lot really actually simply quite rather
     """.split()
 )
 

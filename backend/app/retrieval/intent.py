@@ -34,6 +34,13 @@ _POLICY_CUES = (
 _PERSONAL_CUES = (
     "my ", "mine", "i have", "do i", "am i", "for me", "myself",
 )
+# Attributes that live on a student's own record. Naming a student id together
+# with one of these is a record lookup even without the word "my": staff ask
+# "What is the CGPA of S101?" exactly this way.
+_PERSONAL_ATTRIBUTE_CUES = (
+    "cgpa", "gpa", "attendance", "grade", "score", "marks", "backlog",
+    "skill", "profile", "percent",
+)
 _PLACEMENT_CUES = (
     "eligible for", "eligibility", "placement", "drive", "recruiter",
     "company", "package", "lpa", "offer", "shortlist",
@@ -166,7 +173,13 @@ def understand_query(
     ):
         result.intent = Intent.placement_eligibility
         result.matched_rules.append("placement_cue_with_entity")
-    elif result.is_personal and "student_id" in result.entities:
+    elif "student_id" in result.entities and (
+        result.is_personal
+        or any(cue in lowered for cue in _PERSONAL_ATTRIBUTE_CUES)
+    ):
+        # A named student plus a record attribute is a lookup of that student's
+        # record. Access control decides whether the caller may see it; the
+        # intent itself does not depend on who is asking.
         result.intent = Intent.personal_record
         result.matched_rules.append("personal_with_student_id")
     elif result.needs_aggregation:

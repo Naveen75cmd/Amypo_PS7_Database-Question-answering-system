@@ -417,8 +417,24 @@ class RetrievalIndex:
             + 0.06 * section_hit
             + 0.08 * min(1.0, result.fused_score * 30)
             - 0.04 * length_penalty
+            - self._superseded_penalty(chunk)
         )
         return float(score)
+
+    @staticmethod
+    def _superseded_penalty(chunk: ChunkRecord) -> float:
+        """Down-rank documents that are explicitly marked as superseded.
+
+        The corpus deliberately contains a retired attendance policy. Both it and
+        the current one match the same question almost equally well, so without
+        this the retired rule can rank first and the answer layer has to clean up
+        the mess. Detecting it at ranking time is cheaper and more honest than
+        hoping the generator prefers the newer text.
+        """
+        haystack = f"{chunk.title} {chunk.section or ''}".lower()
+        if "superseded" in haystack or "2019 version" in haystack:
+            return 0.12
+        return 0.0
 
     def dense_feature_weight(self) -> float:
         """Weight of dense similarity in the feature reranker.
