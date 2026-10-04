@@ -14,7 +14,16 @@ from ...core.schemas import (
 
 router = APIRouter(tags=["monitor"])
 
-READY = False
+
+def _monitor():
+    from ...core.container import get_container
+
+    try:
+        return get_container().get("monitor")
+    except Exception as exc:
+        raise HTTPException(
+            status_code=503, detail=f"resource monitor unavailable: {exc}"
+        ) from exc
 
 
 @router.get(
@@ -23,12 +32,13 @@ READY = False
     summary="Live RAM, CPU, bandwidth and simulated-cloud quota",
 )
 def resource_status() -> ResourceStatus:
-    if not READY:
-        raise HTTPException(
-            status_code=503,
-            detail="Resource monitor not available yet (implemented in Phase 5).",
-        )
-    raise HTTPException(status_code=501, detail="unreachable")
+    from ...core.container import get_container
+
+    monitor = _monitor()
+    # Only report Ollama state if the client has already been built; probing here
+    # would add latency to a status endpoint that must stay cheap.
+    llm = get_container()._cache.get("llm")
+    return monitor.status(llm)
 
 
 @router.get("/metrics", response_model=MetricsResponse, summary="Aggregate quality and cost metrics")

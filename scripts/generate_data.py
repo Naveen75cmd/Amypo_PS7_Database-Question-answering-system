@@ -41,6 +41,7 @@ from app.core.dataspec import (  # noqa: E402
 RAW = PROJECT_ROOT / "data" / "raw"
 SYNTHETIC = PROJECT_ROOT / "data" / "synthetic"
 EVAL = PROJECT_ROOT / "data" / "eval"
+SIM = PROJECT_ROOT / "data" / "sim"
 
 AS_OF = date(2026, 9, 1)
 
@@ -212,7 +213,7 @@ def gen_companies() -> tuple[list[list], list[list], list[list]]:
     """Companies, roles and requirements.
 
     ``role_index`` is the 1-based position in global generation order. Roles are
-    inserted in this same order, so the SQLite ``role_id`` matches it, which is
+    inserted in this same order, so the MySQL ``role_id`` matches it, which is
     what lets the benchmark label a role as ``db:company_roles:<n>``.
     """
     company_rows: list[list] = []
@@ -381,6 +382,15 @@ def main() -> int:
         for item in history:
             fh.write(json.dumps(item) + "\n")
 
+    # Bandwidth scenarios the router replays in the simulator. Written from the
+    # simulator's own defaults so the file and the code cannot disagree.
+    from app.monitor.bandwidth import DEFAULT_SCENARIOS  # noqa: E402
+
+    SIM.mkdir(parents=True, exist_ok=True)
+    (SIM / "bandwidth.json").write_text(
+        json.dumps({"scenarios": DEFAULT_SCENARIOS}, indent=2), encoding="utf-8"
+    )
+
     from app.eval.benchmark_spec import build_benchmark, write_benchmark  # noqa: E402
 
     benchmark_path = EVAL / "benchmark.jsonl"
@@ -413,6 +423,7 @@ def main() -> int:
         "role_requirements": len(req_rows),
         "documents": len(DOCUMENTS),
         "history_queries": len(history),
+        "sim_scenarios": len(DEFAULT_SCENARIOS),
         "benchmark_total": len(benchmark),
         "benchmark_by_kind": kinds,
     }
