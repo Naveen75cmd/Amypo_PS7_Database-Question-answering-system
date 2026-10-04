@@ -70,6 +70,8 @@ cd backend
 python -m app.retrieval            # retrieval ablation: dense / bm25 / hybrid / rerank
 python -m app.eval.answer_eval     # end to end: coverage, citations, abstention
 python -m app.eval.answer_eval --model   # same, through the real local model
+python -m app.router               # classifier accuracy + savings vs always-cloud
+python -m app.router --train       # retrain the complexity classifier
 ```
 
 With the deterministic extractive fallback (no model pulled), the answer harness
@@ -112,7 +114,6 @@ backend/app/
   router/     complexity classifier, decision engine
   placement/  eligibility, suitability, skill gaps
   eval/       benchmark harness
-  db/         SQLAlchemy + PyMySQL connection and migration runner
 db/           MySQL schema.sql, migrations, my.cnf, image Dockerfile
 frontend/     Next.js 14 chat product
 data/         raw, synthetic, eval, sim
