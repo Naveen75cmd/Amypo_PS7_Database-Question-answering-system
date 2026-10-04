@@ -1,4 +1,4 @@
-"""Load the synthetic (or AMYPO-provided) CSV exports into SQLite.
+"""Load the synthetic (or AMYPO-provided) CSV exports into MySQL.
 
 Idempotent: every table is upserted on its natural key, so re-running changes
 nothing and row counts stay stable.

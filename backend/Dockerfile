@@ -2,7 +2,9 @@ FROM python:3.12-slim
 
 ENV PYTHONUNBUFFERED=1 \
     PYTHONDONTWRITEBYTECODE=1 \
-    AMYPO_DB_PATH=/data/amypo.db
+    AMYPO_MYSQL_HOST=mysql \
+    AMYPO_MYSQL_PORT=3306 \
+    AMYPO_MYSQL_DATABASE=amypo
 
 WORKDIR /app
 
@@ -16,6 +18,7 @@ RUN pip install --no-cache-dir -r /app/backend/requirements.txt
 
 COPY backend /app/backend
 COPY scripts /app/scripts
+COPY db /app/db
 COPY openapi.yaml /app/openapi.yaml
 
 WORKDIR /app/backend

@@ -15,37 +15,34 @@ from fastapi import APIRouter
 from ... import __version__
 from ...core.schemas import HealthComponent, HealthResponse
 from ...core.settings import settings
-from ...db import get_connection
+from ...db import get_connection, query_one
 
 router = APIRouter(tags=["health"])
 
 
 def _db_status() -> HealthComponent:
     try:
-        conn = get_connection()
-        conn.execute("SELECT 1").fetchone()
-        tables = conn.execute(
-            "SELECT COUNT(*) FROM sqlite_master WHERE type='table'"
-        ).fetchone()[0]
-        return HealthComponent(status="ok", detail=f"{tables} tables at {settings.db_path}")
+        get_connection()  # raises if MySQL is unreachable
+        row = query_one(
+            "SELECT COUNT(*) AS n FROM information_schema.tables WHERE table_schema = ?",
+            (settings.mysql_database,),
+        )
+        tables = int(row["n"]) if row else 0
+        where = f"{settings.mysql_host}:{settings.mysql_port}/{settings.mysql_database}"
+        return HealthComponent(status="ok", detail=f"{tables} tables at {where}")
     except Exception as exc:  # pragma: no cover - defensive
         return HealthComponent(status="down", detail=str(exc))
 
 
 def _index_status() -> HealthComponent:
     try:
-        from ...db import query_one
-
         row = query_one("SELECT COUNT(*) AS n FROM chunks")
         n = int(row["n"]) if row else 0
         if n == 0:
             return HealthComponent(status="not_loaded", detail="no chunks indexed yet")
-        embedded = query_one(
-            "SELECT COUNT(*) AS n FROM chunks WHERE embedding IS NOT NULL"
-        )
-        e = int(embedded["n"]) if embedded else 0
-        state = "ok" if e else "degraded"
-        return HealthComponent(status=state, detail=f"{n} chunks, {e} embedded")
+        # Vectors live in FAISS and are rebuilt from chunk text on load, so
+        # "indexed" is simply whether MySQL is populated.
+        return HealthComponent(status="ok", detail=f"{n} chunks, vectors in FAISS")
     except Exception as exc:  # pragma: no cover
         return HealthComponent(status="down", detail=str(exc))
 

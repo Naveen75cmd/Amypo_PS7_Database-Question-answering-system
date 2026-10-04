@@ -22,8 +22,13 @@ async def lifespan(app: FastAPI):
     configure_logging(settings.log_level)
     from .db import get_connection
 
-    get_connection()  # creates the database and applies migrations
-    log_event(log, "startup", version=__version__, db=str(settings.db_path))
+    get_connection()  # connects to MySQL and applies migrations
+    log_event(
+        log,
+        "startup",
+        version=__version__,
+        db=f"{settings.mysql_host}:{settings.mysql_port}/{settings.mysql_database}",
+    )
     yield
     # Stop the background monitor thread if it was started.
     from .core.container import get_container

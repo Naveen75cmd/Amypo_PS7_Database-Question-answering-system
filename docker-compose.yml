@@ -1,7 +1,36 @@
 # `docker compose up` is the only command needed for the submission demo.
-# Memory limits below add up to well under the 8 GB budget.
+#
+# Services: mysql, backend, frontend, ollama. Memory limits add up to well under
+# the 8 GB budget: mysql 512m + backend 2g + frontend 1g + ollama 4g = 7.5 GB.
 
 services:
+  mysql:
+    build:
+      context: ./db
+      dockerfile: Dockerfile
+    environment:
+      MYSQL_ROOT_PASSWORD: amypo-root
+      MYSQL_DATABASE: amypo
+      MYSQL_USER: amypo
+      MYSQL_PASSWORD: amypo
+    ports:
+      - "3306:3306"
+    volumes:
+      # Named volume: seeded data survives restarts.
+      - amypo_mysql:/var/lib/mysql
+      # Schema init runs on first start (empty volume) from /db/migrations.
+      - ./db/migrations:/docker-entrypoint-initdb.d:ro
+    command:
+      - --character-set-server=utf8mb4
+      - --collation-server=utf8mb4_unicode_ci
+    mem_limit: 512m
+    healthcheck:
+      test: ["CMD", "mysqladmin", "ping", "-h", "127.0.0.1", "-uamypo", "-pamypo"]
+      interval: 5s
+      timeout: 5s
+      retries: 20
+      start_period: 20s
+
   backend:
     build:
       context: .
@@ -9,7 +38,11 @@ services:
     ports:
       - "8000:8000"
     environment:
-      AMYPO_DB_PATH: /data/amypo.db
+      AMYPO_MYSQL_HOST: mysql
+      AMYPO_MYSQL_PORT: "3306"
+      AMYPO_MYSQL_USER: amypo
+      AMYPO_MYSQL_PASSWORD: amypo
+      AMYPO_MYSQL_DATABASE: amypo
       AMYPO_OLLAMA_BASE_URL: http://ollama:11434
       AMYPO_ALLOW_REAL_MODELS: "true"
     volumes:
@@ -17,7 +50,10 @@ services:
       - ./docs:/docs
     mem_limit: 2g
     depends_on:
-      - ollama
+      mysql:
+        condition: service_healthy
+      ollama:
+        condition: service_started
     healthcheck:
       test: ["CMD", "python", "-c", "import urllib.request;urllib.request.urlopen('http://127.0.0.1:8000/api/v1/health')"]
       interval: 15s
@@ -47,4 +83,5 @@ services:
     mem_limit: 4g
 
 volumes:
+  amypo_mysql:
   amypo_ollama:

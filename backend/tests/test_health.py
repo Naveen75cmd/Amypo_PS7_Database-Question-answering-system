@@ -26,14 +26,17 @@ def test_inbound_request_id_is_honoured(client) -> None:
 
 
 def test_migrations_create_every_table(temp_db) -> None:
-    from app.db import init_db
+    from app.core.settings import settings
+    from app.db import init_db, query
 
-    conn = init_db(temp_db)
+    init_db()
     names = {
-        row[0]
-        for row in conn.execute(
-            "SELECT name FROM sqlite_master WHERE type='table'"
-        ).fetchall()
+        row["name"]
+        for row in query(
+            "SELECT table_name AS name FROM information_schema.tables "
+            "WHERE table_schema = ?",
+            (settings.mysql_database,),
+        )
     }
     expected = {
         "students", "courses", "enrollments", "grades", "attendance", "schedules",
@@ -45,8 +48,8 @@ def test_migrations_create_every_table(temp_db) -> None:
 
 
 def test_migrations_are_idempotent(temp_db) -> None:
-    from app.db import init_db
+    from app.db import get_engine, init_db
     from app.db.migrate import apply_migrations
 
-    conn = init_db(temp_db)
-    assert apply_migrations(conn) == []
+    init_db()
+    assert apply_migrations(get_engine()) == []

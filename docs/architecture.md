@@ -71,13 +71,24 @@ retrieve `student:<own_id>` records plus `public` documents; staff retrieve
 everything. The semantic cache key includes the access scope, so a cached staff
 answer is never served to a student.
 
-## Storage
+## Storage (MySQL / FAISS)
 
-- **SQLite** — structured campus data, chunk text and metadata, semantic cache,
-  query log, router decisions, resource samples, eval runs.
-- **Embeddings** — float32 vectors persisted on the `chunks` rows, with a FAISS
-  index for fast search when `faiss-cpu` is installed and a numpy cosine
-  fallback when it is not.
+Data is split by role, and the split is strict:
+
+- **MySQL 8** (via SQLAlchemy + PyMySQL) — everything exact: grades, attendance,
+  schedules, skills, company criteria, and the chunk **text, metadata and
+  `access_scope`** behind every citation. It also holds the semantic cache, query
+  log, router decisions, resource samples and eval runs. Tuned to ~256 MB of
+  buffer pool (`db/my.cnf`).
+- **FAISS** — embedding vectors only. Each vector id maps back to a
+  `chunks.record_id`; text and metadata are always read from MySQL, so a
+  citation can never drift from the data it points at. Without `faiss-cpu`, the
+  same vectors are searched with a numpy cosine fallback.
+- **BM25 (`rank_bm25`)** — lexical ranking over the same chunk texts.
+
+Numbers and eligibility come from parameterised SQL templates, never the LLM;
+free text (policies, FAQs, course content) comes from retrieval over MySQL-backed
+chunks.
 
 ## Graceful degradation
 

@@ -1,6 +1,6 @@
 """The ingestion pipeline.
 
-Order matters: structured rows are loaded into SQLite first, because their
+Order matters: structured rows are loaded into MySQL first, because their
 "record cards" are derived from the rows and are indexed alongside the document
 chunks. Everything is keyed by content hash, so re-ingesting an unchanged corpus
 writes nothing.
@@ -44,15 +44,15 @@ def _store_chunk(chunk: Chunk) -> None:
         INSERT INTO chunks (record_id, doc_id, chunk_no, title, section, page, text,
                             token_count, access_scope, content_hash, updated_at)
         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-        ON CONFLICT(record_id) DO UPDATE SET
-            title = excluded.title,
-            section = excluded.section,
-            page = excluded.page,
-            text = excluded.text,
-            token_count = excluded.token_count,
-            access_scope = excluded.access_scope,
-            content_hash = excluded.content_hash,
-            updated_at = excluded.updated_at
+        ON DUPLICATE KEY UPDATE
+            title = VALUES(title),
+            section = VALUES(section),
+            page = VALUES(page),
+            text = VALUES(text),
+            token_count = VALUES(token_count),
+            access_scope = VALUES(access_scope),
+            content_hash = VALUES(content_hash),
+            updated_at = VALUES(updated_at)
         """,
         (
             chunk.record_id, chunk.doc_id, chunk.chunk_no, chunk.title, chunk.section,
@@ -112,13 +112,13 @@ def ingest_documents(root: Path, force: bool = False) -> tuple[int, int, int, li
             INSERT INTO documents (doc_id, title, source_path, doc_type, content_hash,
                                    access_scope, version, updated_at, indexed_at)
             VALUES (?, ?, ?, ?, ?, 'public', ?, ?, ?)
-            ON CONFLICT(doc_id) DO UPDATE SET
-                title = excluded.title,
-                source_path = excluded.source_path,
-                content_hash = excluded.content_hash,
-                version = excluded.version,
-                updated_at = excluded.updated_at,
-                indexed_at = excluded.indexed_at
+            ON DUPLICATE KEY UPDATE
+                title = VALUES(title),
+                source_path = VALUES(source_path),
+                content_hash = VALUES(content_hash),
+                version = VALUES(version),
+                updated_at = VALUES(updated_at),
+                indexed_at = VALUES(indexed_at)
             """,
             (loaded.doc_id, loaded.title, loaded.source_path, loaded.doc_type,
              text_hash, version, _now(), _now()),
@@ -134,7 +134,7 @@ def ingest_documents(root: Path, force: bool = False) -> tuple[int, int, int, li
 
 
 def ingest_record_cards() -> tuple[int, list[str]]:
-    """Upsert the structured record cards from the current SQLite rows.
+    """Upsert the structured record cards from the current MySQL rows.
 
     Cards are derived data, so rows that no longer exist must disappear. Rather
     than deleting every card and re-inserting (which would throw away 6k
@@ -207,11 +207,14 @@ def corpus_stats() -> dict[str, int]:
     """Counts used by the CLI summary and the health endpoint."""
     docs = query_one("SELECT COUNT(*) AS n FROM documents")
     chunks = query_one("SELECT COUNT(*) AS n FROM chunks")
-    embedded = query_one("SELECT COUNT(*) AS n FROM chunks WHERE embedding IS NOT NULL")
     db_chunks = query_one("SELECT COUNT(*) AS n FROM chunks WHERE record_id LIKE 'db:%'")
+    # Vectors are not stored here: FAISS holds them and maps back to record_ids,
+    # so there is nothing in MySQL to count as "embedded". ``vectors`` therefore
+    # mirrors the chunk count and exists only so the CLI summary stays stable.
+    total = int(chunks["n"]) if chunks else 0
     return {
         "documents": int(docs["n"]) if docs else 0,
-        "chunks": int(chunks["n"]) if chunks else 0,
-        "embedded": int(embedded["n"]) if embedded else 0,
+        "chunks": total,
+        "embedded": total,
         "record_cards": int(db_chunks["n"]) if db_chunks else 0,
     }

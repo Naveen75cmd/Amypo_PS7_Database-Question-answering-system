@@ -479,8 +479,8 @@ class AskPipeline:
         try:
             execute(
                 """
-                INSERT OR REPLACE INTO query_log
-                    (request_id, question, user_id, role, intent, route, answer,
+                REPLACE INTO query_log
+                    (request_id, question, user_id, `role`, intent, route, answer,
                      confidence, groundedness, abstained, degraded, latency_ms,
                      estimated_cost, trace_json, created_at)
                 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)

@@ -18,15 +18,22 @@ Built for HackWithAMYPO 2026 (PS7 + PS1) by Team Tech Titans.
 # 1. Backend dependencies
 python -m pip install -r backend/requirements.txt
 
-# 2. Generate synthetic AMYPO-style data and the benchmark set
+# 2. Start MySQL 8 (named volume + schema init from /db/migrations)
+docker compose up -d --wait mysql
+
+# 3. Generate synthetic AMYPO-style data and the benchmark set
 python scripts/generate_data.py
 
-# 3. Ingest documents + structured records into SQLite and the index
-cd backend && python -m app.ingest --path ../data/raw && cd ..
+# 4. Load structured rows + documents into MySQL, then index them
+cd backend && python -m app.ingest --path ../data/raw --structured ../data/synthetic && cd ..
 
-# 4. Run the API
+# 5. Run the API
 cd backend && python -m uvicorn app.main:app --reload --port 8000
 ```
+
+MySQL exposes the exact data (grades, attendance, schedules, chunk text and
+citations); embeddings live in FAISS. Connection defaults match compose
+(`amypo` / `amypo` on `127.0.0.1:3306`) and are overridable with `AMYPO_MYSQL_*`.
 
 Then, in a second terminal:
 
@@ -105,10 +112,15 @@ backend/app/
   router/     complexity classifier, decision engine
   placement/  eligibility, suitability, skill gaps
   eval/       benchmark harness
+  db/         SQLAlchemy + PyMySQL connection and migration runner
+db/           MySQL schema.sql, migrations, my.cnf, image Dockerfile
 frontend/     Next.js 14 chat product
 data/         raw, synthetic, eval, sim
 docs/         architecture, evaluation reports, model card
 ```
+
+The backend and the tests need MySQL running. `python -m pytest` bootstraps a
+throwaway `amypo_test` schema so it never disturbs the seeded `amypo` database.
 
 ## Notes on the spec
 

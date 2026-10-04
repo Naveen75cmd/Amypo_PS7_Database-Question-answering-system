@@ -1,70 +1,105 @@
-"""SQLite connection management.
+"""MySQL connection management via SQLAlchemy + PyMySQL.
 
-One connection per thread (SQLite objects are not shareable across threads),
-WAL mode for concurrent readers while the API writes traces.
+A single process-wide engine owns a small connection pool (see
+``settings.mysql_pool_size``); every helper borrows a pooled connection for the
+duration of one statement. That keeps the connection count tiny, which matters
+because MySQL is capped at ~400-500 MB inside the 8 GB budget.
+
+The rest of the codebase writes ordinary SQL with ``?`` placeholders, exactly as
+it did against SQLite. ``_adapt`` translates that dialect at the boundary:
+``?`` -> ``%s`` (PyMySQL's paramstyle), literal ``%`` -> ``%%``, and the SQLite
+``INSERT OR REPLACE`` -> MySQL ``REPLACE``. Keeping the translation in one place
+means the ~100 SQL call sites stay database-agnostic and readable.
 """
 
 from __future__ import annotations
 
-import sqlite3
+import logging
+import re
 import threading
 from collections.abc import Iterable, Sequence
-from pathlib import Path
 from typing import Any
+
+from sqlalchemy import create_engine
+from sqlalchemy.engine import Engine
 
 from ..core.settings import settings
 
-_local = threading.local()
+log = logging.getLogger(__name__)
+
+_engine_lock = threading.Lock()
+_engine: Engine | None = None
 _init_lock = threading.Lock()
 _initialised = False
 
-
-def _configure(conn: sqlite3.Connection) -> None:
-    conn.row_factory = sqlite3.Row
-    conn.execute("PRAGMA journal_mode = WAL")
-    conn.execute("PRAGMA foreign_keys = ON")
-    conn.execute("PRAGMA busy_timeout = 5000")
-    conn.execute("PRAGMA synchronous = NORMAL")
+_INSERT_OR_REPLACE_RE = re.compile(r"INSERT\s+OR\s+REPLACE", re.IGNORECASE)
 
 
-def connect(db_path: Path | str | None = None) -> sqlite3.Connection:
-    path = Path(db_path) if db_path else settings.db_path
-    path.parent.mkdir(parents=True, exist_ok=True)
-    conn = sqlite3.connect(str(path), check_same_thread=False, timeout=10)
-    _configure(conn)
-    return conn
+def _adapt(sql: str) -> str:
+    """Translate SQLite-flavoured SQL to MySQL, including placeholders.
+
+    ``%`` is escaped *before* ``?`` is converted, so a LIKE pattern like
+    ``'%foo%'`` becomes ``'%%foo%%'`` (correct for PyMySQL) while each ``?``
+    becomes ``%s``.
+    """
+    adapted = _INSERT_OR_REPLACE_RE.sub("REPLACE", sql, count=1)
+    return adapted.replace("%", "%%").replace("?", "%s")
 
 
-def get_connection() -> sqlite3.Connection:
-    """Thread-local connection, migrated on first use in this process."""
-    conn = getattr(_local, "conn", None)
-    if conn is None:
-        conn = connect()
-        _local.conn = conn
+def get_engine() -> Engine:
+    """The process-wide engine, built lazily."""
+    global _engine
+    if _engine is None:
+        with _engine_lock:
+            if _engine is None:
+                _engine = create_engine(
+                    settings.mysql_url,
+                    pool_size=settings.mysql_pool_size,
+                    max_overflow=settings.mysql_max_overflow,
+                    pool_pre_ping=True,
+                    pool_recycle=settings.mysql_pool_recycle_s,
+                    future=True,
+                )
+    return _engine
+
+
+def connect() -> Engine:
+    """Return the engine (kept for API compatibility with the SQLite layer)."""
+    return get_engine()
+
+
+def _ensure_migrated() -> None:
     global _initialised
-    if not _initialised:
-        with _init_lock:
-            if not _initialised:
-                from .migrate import apply_migrations
+    if _initialised:
+        return
+    with _init_lock:
+        if not _initialised:
+            from .migrate import apply_migrations
 
-                apply_migrations(conn)
-                _initialised = True
-    return conn
+            apply_migrations(get_engine())
+            _initialised = True
 
 
-def init_db(db_path: Path | str | None = None) -> sqlite3.Connection:
-    """Create/migrate a database at ``db_path`` (defaults to settings)."""
-    conn = connect(db_path)
+def get_connection() -> Engine:
+    """The engine, with the schema guaranteed to exist."""
+    engine = get_engine()
+    _ensure_migrated()
+    return engine
+
+
+def init_db() -> Engine:
+    """Apply migrations against the configured database."""
     from .migrate import apply_migrations
 
-    apply_migrations(conn)
-    return conn
+    engine = get_engine()
+    apply_migrations(engine)
+    return engine
 
 
 def query(sql: str, params: Sequence[Any] | dict[str, Any] = ()) -> list[dict[str, Any]]:
-    conn = get_connection()
-    cur = conn.execute(sql, params)
-    return [dict(row) for row in cur.fetchall()]
+    with get_engine().connect() as conn:
+        result = conn.exec_driver_sql(_adapt(sql), tuple(params) if not isinstance(params, dict) else params)
+        return [dict(row) for row in result.mappings().all()]
 
 
 def query_one(sql: str, params: Sequence[Any] | dict[str, Any] = ()) -> dict[str, Any] | None:
@@ -73,22 +108,36 @@ def query_one(sql: str, params: Sequence[Any] | dict[str, Any] = ()) -> dict[str
 
 
 def execute(sql: str, params: Sequence[Any] | dict[str, Any] = ()) -> int:
-    """Run a write statement and commit. Returns lastrowid."""
-    conn = get_connection()
-    cur = conn.execute(sql, params)
-    conn.commit()
-    return int(cur.lastrowid or 0)
+    """Run a write statement in its own transaction. Returns the last row id."""
+    with get_engine().begin() as conn:
+        result = conn.exec_driver_sql(
+            _adapt(sql), tuple(params) if not isinstance(params, dict) else params
+        )
+        return int(result.lastrowid or 0)
 
 
 def executemany(sql: str, seq: Iterable[Sequence[Any]]) -> None:
-    conn = get_connection()
-    conn.executemany(sql, list(seq))
-    conn.commit()
+    rows = [tuple(row) for row in seq]
+    if not rows:
+        return
+    with get_engine().begin() as conn:
+        conn.exec_driver_sql(_adapt(sql), rows)
+
+
+def reset() -> None:
+    """Drop the cached engine and migration flag (used by tests).
+
+    Disposing the engine also closes pooled connections, so a test that points
+    ``settings`` at a different schema gets a fresh pool.
+    """
+    global _engine, _initialised
+    with _engine_lock:
+        if _engine is not None:
+            _engine.dispose()
+        _engine = None
+    _initialised = False
 
 
 def reset_thread_connection() -> None:
-    """Drop this thread's cached connection (used by tests)."""
-    conn = getattr(_local, "conn", None)
-    if conn is not None:
-        conn.close()
-        _local.conn = None
+    """Compatibility alias for the SQLite-era test hook."""
+    reset()

@@ -122,7 +122,7 @@ def test_ingest_is_idempotent(temp_db) -> None:
     from app.db import init_db, query_one
     from app.ingest.pipeline import ingest_all
 
-    init_db(temp_db)
+    init_db()
     first = ingest_all()
     assert first.documents > 0, "expected documents to be ingested"
     assert not first.errors, first.errors
@@ -147,7 +147,7 @@ def test_record_cards_are_created_for_structured_rows(temp_db) -> None:
     from app.db import init_db, query_one
     from app.ingest.pipeline import ingest_all
 
-    init_db(temp_db)
+    init_db()
     ingest_all()
 
     student_card = query_one("SELECT * FROM chunks WHERE record_id = 'db:students:S102'")
@@ -195,7 +195,7 @@ def test_injection_document_is_present_in_corpus(temp_db) -> None:
     from app.db import init_db, query_one
     from app.ingest.pipeline import ingest_all
 
-    init_db(temp_db)
+    init_db()
     ingest_all()
     row = query_one(
         "SELECT text FROM chunks WHERE doc_id = 'notice-board' AND text LIKE '%IGNORE ALL PREVIOUS%'"

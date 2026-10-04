@@ -39,7 +39,37 @@ class Settings(BaseSettings):
     project_root: Path = PROJECT_ROOT
     data_dir: Path = PROJECT_ROOT / "data"
     docs_dir: Path = PROJECT_ROOT / "docs"
-    db_path: Path = PROJECT_ROOT / "data" / "amypo.db"
+    db_migrations_dir: Path = PROJECT_ROOT / "db" / "migrations"
+
+    # --- MySQL ----------------------------------------------------------
+    # Structured data, chunk text/metadata and every exact record live in MySQL.
+    # The defaults match docker-compose; override with AMYPO_MYSQL_* for a
+    # different server or a throwaway test schema.
+    mysql_host: str = "127.0.0.1"
+    mysql_port: int = 3306
+    mysql_user: str = "amypo"
+    mysql_password: str = "amypo"
+    mysql_database: str = "amypo"
+    mysql_pool_size: int = 5
+    mysql_max_overflow: int = 5
+    mysql_pool_recycle_s: int = 1800
+    # Used only by the test suite, which creates/grants this schema so it never
+    # touches the seeded ``amypo`` database.
+    mysql_test_database: str = "amypo_test"
+    mysql_root_password: str = "amypo-root"
+
+    @property
+    def mysql_url(self) -> str:
+        """SQLAlchemy URL. Credentials are percent-encoded so odd passwords work."""
+        from urllib.parse import quote_plus
+
+        user = quote_plus(self.mysql_user)
+        password = quote_plus(self.mysql_password)
+        return (
+            f"mysql+pymysql://{user}:{password}"
+            f"@{self.mysql_host}:{self.mysql_port}/{self.mysql_database}"
+            "?charset=utf8mb4"
+        )
 
     @property
     def raw_dir(self) -> Path:

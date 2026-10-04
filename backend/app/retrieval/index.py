@@ -5,8 +5,9 @@ reciprocal rank fusion -> feature-based rerank -> top-k, with metadata and
 access filtering applied *before* ranking so an unauthorized chunk can never
 surface even as a low-ranked result.
 
-The whole index lives in memory and is rebuilt from SQLite on demand, so there
-is no second source of truth to keep in sync.
+The index lives in memory and is rebuilt from MySQL on demand: chunk text,
+metadata and access scope are read from MySQL, while the embedding vectors live
+only in FAISS and are regenerated on load.
 """
 
 from __future__ import annotations
@@ -20,13 +21,8 @@ from typing import Any, Literal
 import numpy as np
 
 from ..core.settings import settings
-from ..db import execute, query
-from .embeddings import (
-    Embedder,
-    blob_to_vector,
-    load_embedder,
-    vectors_to_blob,
-)
+from ..db import query
+from .embeddings import Embedder, load_embedder
 from .tokenize import tokenize, tokenize_query
 
 log = logging.getLogger(__name__)
@@ -139,14 +135,13 @@ class RetrievalIndex:
         rows = query(
             """
             SELECT record_id, doc_id, chunk_no, title, section, page, text,
-                   token_count, access_scope, content_hash, updated_at, embedding
+                   token_count, access_scope, content_hash, updated_at
             FROM chunks
             """
         )
         self.chunks = []
         self._by_id = {}
         vectors: list[np.ndarray] = []
-        missing: list[int] = []
 
         for row in rows:
             record = ChunkRecord(
@@ -165,13 +160,12 @@ class RetrievalIndex:
             )
             self._by_id[record.record_id] = len(self.chunks)
             self.chunks.append(record)
-            vector = blob_to_vector(row["embedding"])
-            if vector is None or vector.size != self.embedder.dim:
-                missing.append(len(self.chunks) - 1)
-                vectors.append(np.zeros(self.embedder.dim, dtype=np.float32))
-            else:
-                vectors.append(vector)
+            vectors.append(np.zeros(self.embedder.dim, dtype=np.float32))
 
+        # Vectors live only in FAISS. MySQL stores chunk text, metadata and
+        # access_scope, so every chunk is encoded on load instead of read back
+        # from an embedding column.
+        missing = list(range(len(self.chunks)))
         if missing:
             self._embed_missing(missing, vectors)
 
@@ -208,18 +202,7 @@ class RetrievalIndex:
             for offset, chunk_index in enumerate(batch_indexes):
                 vector = np.asarray(encoded[offset], dtype=np.float32)
                 vectors[chunk_index] = vector
-                self._persist_embedding(self.chunks[chunk_index].record_id, vector)
         self._embed_time_ms = (time.perf_counter() - started) * 1000
-
-    @staticmethod
-    def _persist_embedding(record_id: str, vector: np.ndarray) -> None:
-        try:
-            execute(
-                "UPDATE chunks SET embedding = ? WHERE record_id = ?",
-                (vectors_to_blob(vector.reshape(1, -1)), record_id),
-            )
-        except Exception as exc:  # pragma: no cover
-            log.warning("could not persist embedding for %s: %s", record_id, exc)
 
     def _build_bm25(self) -> None:
         if not self.chunks:
