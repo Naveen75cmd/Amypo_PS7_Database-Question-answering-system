@@ -64,7 +64,7 @@ def get_engine() -> Engine:
 
 
 def connect() -> Engine:
-    """Return the engine (kept for API compatibility with the SQLite layer)."""
+    """Return the shared engine."""
     return get_engine()
 
 

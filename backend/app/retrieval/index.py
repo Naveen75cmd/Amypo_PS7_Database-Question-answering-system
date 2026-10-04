@@ -123,7 +123,7 @@ class RetrievalIndex:
         return index
 
     def refresh(self) -> None:
-        """Rebuild from SQLite (called after ingestion)."""
+        """Rebuild from MySQL (called after ingestion)."""
         self.build()
 
     @property

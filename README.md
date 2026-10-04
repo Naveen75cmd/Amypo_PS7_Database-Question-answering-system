@@ -102,7 +102,7 @@ python -m pip install sentence-transformers faiss-cpu
 backend/app/
   api/        HTTP routers + middleware
   core/       settings, logging, schemas, service container
-  db/         SQLite schema + migrations
+  db/         SQLAlchemy + PyMySQL connection and migration runner
   ingest/     document and structured loaders, chunking
   retrieval/  embeddings, BM25, FAISS, RRF fusion, reranking
   llm/        Ollama client + deterministic stub
