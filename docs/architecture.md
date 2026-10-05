@@ -86,9 +86,37 @@ Data is split by role, and the split is strict:
   same vectors are searched with a numpy cosine fallback.
 - **BM25 (`rank_bm25`)** — lexical ranking over the same chunk texts.
 
-Numbers and eligibility come from parameterised SQL templates, never the LLM;
-free text (policies, FAQs, course content) comes from retrieval over MySQL-backed
-chunks.
+Numbers and eligibility come from parameterised SQL templates and the placement
+engine, never the LLM; free text (policies, FAQs, course content) comes from
+retrieval over MySQL-backed chunks.
+
+## Placement engine (Phase 6)
+
+Eligibility is decided, not predicted. `app/placement/rules.py` evaluates
+deterministic per-criterion comparisons (CGPA/attendance/projects/communication
+floors, a backlogs ceiling, an allowed-departments list, required vs preferred
+skill levels) and reports every failing criterion by name. Students who pass
+are ranked by `suitability.py` — a weighted blend of skill match, project
+relevance, performance trend, coding and communication, with per-role weights
+read from `company_roles.weights` and renormalised. Suitability only orders
+students the rules already accepted, so a soft score can never admit someone
+the criteria reject.
+
+- **Skill gaps** (`gaps.py`) report each shortfall with severity
+  (blocking/weak/ok) and an ordered learning path whose suggestions cite real
+  catalogue records (`doc:course-manual-*` chunks, falling back to
+  `db:skills:<id>`).
+- **What-if** re-runs eligibility with overrides (CGPA, skill levels, …) and
+  reports which roles open up or close; nothing is persisted.
+- **Privacy**: a student caller sees only their own record; cohort queries are
+  staff-only and every one is written to `cohort_queries` for audit.
+- **Fairness**: `fairness.py` holds the protected-attribute list; the feature
+  set used for suitability is checked against it at import time.
+- **/ask integration**: placement intents are answered by
+  `placement/answers.py`, which phrases the engine's results into short,
+  per-fact sentences with `[Sn]` citations and hands its own evidence to the
+  grounding verifier, so every number in the answer is checked against the
+  record it came from. Suitability scores never appear in the prose.
 
 ## Graceful degradation
 

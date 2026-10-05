@@ -173,6 +173,13 @@ def understand_query(
     ):
         result.intent = Intent.placement_eligibility
         result.matched_rules.append("placement_cue_with_entity")
+    elif any(cue in lowered for cue in ("eligible for", "eligibility")) and (
+        "student_id" in result.entities
+    ):
+        # A personal question about eligibility without a named role ("which
+        # roles am I eligible for?") is still a placement question.
+        result.intent = Intent.placement_eligibility
+        result.matched_rules.append("personal_eligibility_cue")
     elif "student_id" in result.entities and (
         result.is_personal
         or any(cue in lowered for cue in _PERSONAL_ATTRIBUTE_CUES)

@@ -293,3 +293,25 @@ CREATE TABLE IF NOT EXISTS eval_runs (
     report_path  VARCHAR(512),
     created_at   VARCHAR(40) NOT NULL
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;
+
+-- --------------------------------------------------------------------------
+-- Placement
+-- --------------------------------------------------------------------------
+
+-- Every cohort query ("who is eligible for X") is logged here, because a staff
+-- query over many students' records is an accountability event. Single-student
+-- eligibility checks are per-request and are not logged here.
+CREATE TABLE IF NOT EXISTS cohort_queries (
+    id           BIGINT NOT NULL AUTO_INCREMENT PRIMARY KEY,
+    kind         VARCHAR(32) NOT NULL,       -- eligibility | match | skill_gap | what_if
+    query        MEDIUMTEXT NOT NULL,
+    company      VARCHAR(191),
+    role_title   VARCHAR(191),
+    role_id      BIGINT,
+    department   VARCHAR(64),
+    user_id      VARCHAR(32),
+    `role`       VARCHAR(16) NOT NULL DEFAULT 'staff',
+    result_count INT NOT NULL DEFAULT 0,
+    created_at   VARCHAR(40) NOT NULL,
+    KEY idx_cohort_created (created_at)
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;

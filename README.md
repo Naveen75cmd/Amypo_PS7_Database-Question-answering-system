@@ -112,7 +112,7 @@ backend/app/
   cache/      semantic cache
   monitor/    resource monitor, bandwidth + cloud simulators
   router/     complexity classifier, decision engine
-  placement/  eligibility, suitability, skill gaps
+  placement/  eligibility, suitability, skill gaps, what-if, ask answers
   eval/       benchmark harness
 db/           MySQL schema.sql, migrations, my.cnf, image Dockerfile
 frontend/     Next.js 14 chat product

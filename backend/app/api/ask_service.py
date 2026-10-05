@@ -12,7 +12,7 @@ import time
 import uuid
 from dataclasses import dataclass, field
 from datetime import datetime, timezone
-from typing import Any
+from typing import TYPE_CHECKING, Any
 
 from ..core.schemas import (
     AskResponse,
@@ -46,6 +46,10 @@ from ..retrieval.intent import (
     is_structured_intent,
     understand_query,
 )
+
+if TYPE_CHECKING:  # pragma: no cover - type-only
+    from ..placement.answers import PlacementAnswer
+    from ..placement.engine import PlacementEngine
 
 log = logging.getLogger(__name__)
 
@@ -150,6 +154,40 @@ class AskPipeline:
         self.index = index
         self.llm = llm
         self.verifier = verifier
+        self._placement_engine: "PlacementEngine | None" = None
+
+    @property
+    def placement(self) -> "PlacementEngine":
+        """The placement engine, built lazily so imports stay cheap."""
+        if self._placement_engine is None:
+            from ..placement.engine import PlacementEngine
+
+            self._placement_engine = PlacementEngine(index=self.index)
+        return self._placement_engine
+
+    def _placement_answer(
+        self,
+        intent: Intent,
+        entities: dict[str, Any],
+        question: str,
+        user_id: str | None,
+        role: str,
+    ) -> "PlacementAnswer | None":
+        """A deterministic, citable answer for a placement question, if any.
+
+        Placement intents are answered from the engine's structured results, not
+        from retrieved prose: eligibility is decided, never generated. Any
+        failure here falls back to the normal pipeline path.
+        """
+        from ..placement import answers as placement_answers
+
+        try:
+            return placement_answers.build(
+                intent, entities, question, self.placement, user_id=user_id, role=role
+            )
+        except Exception as exc:  # pragma: no cover - never fail a request
+            log.warning("placement answer failed, falling back: %s", exc)
+            return None
 
     # ------------------------------------------------------------------
     # Main entry point
@@ -211,6 +249,49 @@ class AskPipeline:
         )
         steps.append(stage)
 
+        # 2b. Placement engine -------------------------------------------
+        # Placement questions are answered from the engine's own records. The
+        # entities are already scoped, so a student asking about someone else's
+        # record never reaches the engine.
+        stage = Stage("placement", "Checked placement records")
+        placement_answer = None
+        if not denied_student and understanding.intent in (
+            Intent.placement_eligibility,
+            Intent.skill_gap,
+            Intent.candidate_recommendation,
+        ):
+            placement_answer = self._placement_answer(
+                understanding.intent,
+                scoped_entities,
+                question,
+                user_id,
+                role,
+            )
+            if placement_answer is not None and placement_answer.cohort:
+                if role in settings.staff_roles:
+                    self.placement.log_cohort_query(
+                        "ask_match",
+                        question,
+                        company=scoped_entities.get("company"),
+                        role=scoped_entities.get("role"),
+                        user_id=user_id,
+                        requester_role=role,
+                        result_count=placement_answer.result_count,
+                    )
+                else:
+                    # Cohort answers over other students' records are a
+                    # staff capability; a student caller falls back.
+                    placement_answer = None
+        stage.finish(
+            detail=(
+                "answered from the placement engine"
+                if placement_answer is not None
+                else "no placement result applied"
+            ),
+            status="done" if placement_answer is not None else "pending",
+        )
+        steps.append(stage)
+
         # 3. Retrieval ----------------------------------------------------
         stage = Stage("retrieve", "Retrieved passages")
         retrieved = self.index.retrieve(
@@ -254,7 +335,11 @@ class AskPipeline:
             template_answer = describe_no_record(
                 understanding.intent, understanding.entities, tool_results
             )
-        if denied_student:
+        if placement_answer is not None:
+            # The engine already phrased a grounded answer; use it verbatim.
+            answer_text = placement_answer.text
+            model = "placement-engine"
+        elif denied_student:
             answer_text = (
                 "I could not find this in AMYPO's records. Records for other "
                 "students are outside your access scope."
@@ -280,6 +365,8 @@ class AskPipeline:
         stage.finish(
             detail=f"model: {model}" + (" (degraded)" if degraded else ""),
             items=([f"{len(context)} context block(s) supplied"]
+                   + (["answered from placement records without the LLM"]
+                      if model == "placement-engine" else [])
                    + (["prompt echo removed"] if echo_removed else [])
                    + (["answered from SQL rows without the LLM"] if model == "template" else [])),
             status="done" if answer_text else "failed",
@@ -288,9 +375,18 @@ class AskPipeline:
 
         # 6. Verify ------------------------------------------------------
         stage = Stage("verify", "Verified the claims")
-        report = self.verifier.verify(
-            answer_text, context, question=question, evidence_override=row_evidence
-        )
+        if placement_answer is not None:
+            # The placement answer cites its own records, so verify against
+            # those and nothing else: the markers in the text mean the engine's
+            # evidence, not the retrieved passages.
+            report = self.verifier.verify(
+                answer_text, [], question=question,
+                evidence_override=placement_answer.evidence,
+            )
+        else:
+            report = self.verifier.verify(
+                answer_text, context, question=question, evidence_override=row_evidence
+            )
         stage.finish(
             detail=f"{report.summary()}; confidence {report.confidence:.2f}",
             items=[c.reason for c in report.claims if c.reason][:5],
@@ -299,7 +395,11 @@ class AskPipeline:
         steps.append(stage)
 
         # 7. Abstain when we cannot stand behind the answer ---------------
-        sources = self._sources(retrieved, tool_results)
+        sources = (
+            placement_answer.sources
+            if placement_answer is not None
+            else self._sources(retrieved, tool_results)
+        )
         if report.abstained:
             # An explicit "no record" template answer is already a canonical
             # abstention; keep its useful detail rather than replacing it with

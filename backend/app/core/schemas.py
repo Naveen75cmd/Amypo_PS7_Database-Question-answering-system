@@ -269,6 +269,7 @@ class MatchResponse(BaseModel):
 
 class SkillGapItem(BaseModel):
     skill: str
+    skill_id: str | None = None
     category: str
     current_level: int
     required_level: int
