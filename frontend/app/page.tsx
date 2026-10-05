@@ -6,6 +6,8 @@ import { useRole } from "@/components/providers";
 import { AskInput } from "@/components/ask-input";
 import { Message, type ChatMessage } from "@/components/message";
 import { SourceDrawer } from "@/components/source-drawer";
+import { HistorySidebar } from "@/components/history-sidebar";
+import { IconLayoutSidebar } from "@tabler/icons-react";
 
 const STARTERS: Record<"student" | "staff", string[]> = {
   student: [
@@ -30,6 +32,7 @@ export default function ChatPage() {
   const [drawerOpen, setDrawerOpen] = React.useState(false);
   const [selectedSource, setSelectedSource] = React.useState<string | null>(null);
   const [activeSources, setActiveSources] = React.useState<typeof messages[number]["sources"]>([]);
+  const [historyOpen, setHistoryOpen] = React.useState(true);
   const listRef = React.useRef<HTMLDivElement>(null);
   const inputRef = React.useRef<HTMLDivElement>(null);
 
@@ -114,11 +117,58 @@ export default function ChatPage() {
     setDrawerOpen(true);
   }
 
+  /** Restores a past exchange from the query log without re-asking. */
+  async function reopen(requestId: string, question: string) {
+    try {
+      const traceData = await api.trace(requestId);
+      setTrace(traceData);
+      setActiveSources(traceData.sources);
+      setMessages([
+        { id: `${requestId}-q`, role: "user", text: question },
+        {
+          id: requestId,
+          role: "assistant",
+          text: traceData.answer ?? "(trace stored without an answer)",
+          sources: traceData.sources,
+          confidence: traceData.confidence ?? undefined,
+          route: traceData.route,
+          degraded: traceData.degraded,
+          abstained: traceData.abstained,
+          claimsSupported: traceData.claims.filter((c) => c.supported).length,
+          claimsTotal: traceData.claims.length,
+          traceId: requestId,
+        },
+      ]);
+    } catch {
+      /* leaving the current conversation untouched is the safe fallback */
+    }
+  }
+
   const isEmpty = messages.length === 0;
 
   return (
     <div className="relative flex h-full min-h-0">
+      <HistorySidebar open={historyOpen} onReopen={reopen} />
       <div className="flex min-w-0 flex-1 flex-col">
+        <div className="flex h-10 shrink-0 items-center gap-2 border-b bg-card px-2">
+          <button
+            onClick={() => setHistoryOpen((v) => !v)}
+            aria-label={historyOpen ? "Hide history" : "Show history"}
+            className="grid size-7 place-items-center rounded-md text-muted-foreground transition-colors duration-150 hover:bg-muted hover:text-foreground"
+          >
+            <IconLayoutSidebar size={15} />
+          </button>
+          <button
+            onClick={() => {
+              setMessages([]);
+              setTrace(null);
+              setActiveSources([]);
+            }}
+            className="rounded-md px-2 py-1 text-[13px] text-muted-foreground transition-colors duration-150 hover:bg-muted hover:text-foreground"
+          >
+            New chat
+          </button>
+        </div>
         <div ref={listRef} className="min-h-0 flex-1 overflow-y-auto">
           <div className="mx-auto flex max-w-[760px] flex-col gap-5 px-4 py-6">
             {isEmpty ? (

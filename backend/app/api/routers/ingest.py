@@ -39,3 +39,25 @@ def ingest(payload: IngestRequest) -> IngestResponse:
         duration_ms=result.duration_ms,
         errors=result.errors,
     )
+
+
+@router.get(
+    "/ingest/documents",
+    response_model=list[dict],
+    summary="Ingested documents with chunk counts",
+)
+def documents() -> list[dict]:
+    """The knowledge base as it is indexed right now (read-only)."""
+    from ...db import query
+
+    rows = query(
+        """
+        SELECT d.doc_id, d.title, d.doc_type, d.access_scope, d.version,
+               d.updated_at, d.indexed_at, COUNT(c.record_id) AS chunk_count
+        FROM documents d
+        LEFT JOIN chunks c ON c.doc_id = d.doc_id
+        GROUP BY d.doc_id
+        ORDER BY d.doc_type, d.doc_id
+        """
+    )
+    return [dict(r) for r in rows]

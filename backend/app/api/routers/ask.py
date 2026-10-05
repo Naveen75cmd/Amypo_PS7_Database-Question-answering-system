@@ -10,11 +10,11 @@ from __future__ import annotations
 
 import uuid
 
-from fastapi import APIRouter, HTTPException
+from fastapi import APIRouter, HTTPException, Query
 
 from ...core.container import get_container
 from ...core.logging import get_request_id
-from ...core.schemas import AskRequest, AskResponse, Route, TraceResponse
+from ...core.schemas import AskRequest, AskResponse, Role, TraceResponse
 
 router = APIRouter(tags=["qa"])
 
@@ -64,6 +64,50 @@ def ask(payload: AskRequest) -> AskResponse:
         latency_ms=execution.latency_ms,
         estimated_cost=execution.estimated_cost,
     )
+
+
+@router.get(
+    "/ask/history",
+    response_model=list[dict],
+    summary="Recent answered questions from the query log",
+)
+def history(
+    limit: int = 50,
+    user_id: str | None = None,
+    requester_role: Role = Query(default=Role.student),
+) -> list[dict]:
+    """Recent queries for the chat history rail.
+
+    A student caller sees only their own queries; staff see everything. The
+    rows are summaries — the full trace stays fetchable via /ask/trace/{id}.
+    """
+    from ...db import query
+
+    limit = max(1, min(int(limit), 200))
+    if requester_role == Role.staff:
+        rows = query(
+            """
+            SELECT request_id, question, user_id, intent, confidence, abstained,
+                   created_at
+            FROM query_log
+            ORDER BY created_at DESC
+            LIMIT ?
+            """,
+            (limit,),
+        )
+    else:
+        rows = query(
+            """
+            SELECT request_id, question, user_id, intent, confidence, abstained,
+                   created_at
+            FROM query_log
+            WHERE user_id = ?
+            ORDER BY created_at DESC
+            LIMIT ?
+            """,
+            (user_id, limit),
+        )
+    return [dict(r) for r in rows]
 
 
 @router.get(

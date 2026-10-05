@@ -12,6 +12,8 @@ import {
   IconDashboard,
   IconMessages,
   IconTarget,
+  IconBook2,
+  IconChecklist,
 } from "@tabler/icons-react";
 import { cn } from "@/lib/utils";
 import { api } from "@/lib/api";
@@ -21,6 +23,8 @@ const NAV = [
   { href: "/", label: "Chat", icon: IconMessages },
   { href: "/placement", label: "Placement", icon: IconTarget },
   { href: "/dashboard", label: "Dashboard", icon: IconDashboard },
+  { href: "/knowledge", label: "Knowledge", icon: IconBook2 },
+  { href: "/evaluation", label: "Evaluation", icon: IconChecklist },
 ];
 
 function ResourcePill() {

@@ -242,6 +242,66 @@ export const api = {
 
   trace: (requestId: string) => request<TraceResponse>(`/ask/trace/${requestId}`),
 
+  history: (params: { limit?: number; user_id?: string | null; requester_role: Role }) => {
+    const qs = new URLSearchParams();
+    if (params.limit) qs.set("limit", String(params.limit));
+    if (params.user_id) qs.set("user_id", params.user_id);
+    qs.set("requester_role", params.requester_role);
+    return request<
+      Array<{
+        request_id: string;
+        question: string;
+        user_id: string | null;
+        intent: string | null;
+        confidence: number | null;
+        abstained: boolean;
+        created_at: string;
+      }>
+    >(`/ask/history?${qs.toString()}`);
+  },
+
+  documents: () =>
+    request<
+      Array<{
+        doc_id: string;
+        title: string;
+        doc_type: string;
+        access_scope: string;
+        version: number;
+        updated_at: string;
+        indexed_at: string | null;
+        chunk_count: number;
+      }>
+    >("/ingest/documents"),
+
+  reingest: (force: boolean) =>
+    request<{
+      documents: number;
+      chunks: number;
+      records: number;
+      skipped_unchanged: number;
+      duration_ms: number;
+      errors: string[];
+    }>("/ingest", { method: "POST", body: JSON.stringify({ path: null, force }) }),
+
+  runEval: (limit: number | null) =>
+    request<{
+      run_id: string;
+      total: number;
+      accuracy: number;
+      groundedness: number;
+      hallucination_rate: number;
+      abstention_rate_unanswerable: number;
+      precision_at_1: number;
+      precision_at_3: number;
+      precision_at_5: number;
+      recall_at_k: number;
+      mrr: number;
+      routing_agreement: number | null;
+      cumulative_cost_inr: number;
+      always_cloud_cost_inr: number;
+    }>("/eval/run", { method: "POST", body: JSON.stringify({ limit, write_report: true }) }),
+
   resourceStatus: () => request<ResourceStatus>("/resource-status"),
 
   metrics: () => request<MetricsResponse>("/metrics"),
