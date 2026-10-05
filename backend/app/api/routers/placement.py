@@ -45,6 +45,27 @@ def _deny_cohort(role: Role) -> None:
 
 
 @router.get(
+    "/placement/roles",
+    response_model=list[dict],
+    summary="Companies and roles available for placement queries",
+)
+def roles() -> list[dict]:
+    """Role metadata only — no student data, so no cohort audit is needed."""
+    engine = _engine()
+    return [
+        {
+            "role_id": r["role_id"],
+            "company": r["company"],
+            "title": r["title"],
+            "location": r.get("location"),
+            "package_lpa": r.get("package_lpa"),
+            "min_cgpa": r.get("min_cgpa"),
+        }
+        for r in engine.roles()
+    ]
+
+
+@router.get(
     "/placement/eligibility",
     response_model=EligibilityResponse,
     summary="Deterministic per-criterion eligibility for a student or role",
