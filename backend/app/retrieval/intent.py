@@ -8,10 +8,12 @@ rather than guessed from patterns, so a hallucinated student id cannot occur.
 from __future__ import annotations
 
 import re
+import time
 from dataclasses import dataclass, field
 from typing import Any
 
 from ..core.schemas import Intent
+from ..core.settings import settings
 
 _COURSE_RE = re.compile(r"\b([A-Z]{2}\d{3})\b")
 _STUDENT_RE = re.compile(r"\b(S\d{3,})\b")
@@ -90,8 +92,34 @@ class QueryUnderstanding:
         return "; ".join(bits)
 
 
+# The vocab (course codes, student ids, company names) is read with three DB
+# round-trips. On every call that was ~50 ms of the ~60 ms decide() — the single
+# biggest cost in the routing path. It now refreshes on a short TTL; same-
+# process writes still show up immediately because store paths go through
+# ``invalidate_vocab_cache`` (and tests set the TTL to 0 for exact freshness).
+_VOCAB_TTL_S = 10.0
+_vocab_cache: tuple[float, tuple[set[str], set[str], set[str]]] | None = None
+
+
+def invalidate_vocab_cache() -> None:
+    """Drop the cached vocab (called after ingestion and by tests)."""
+    global _vocab_cache
+    _vocab_cache = None
+
+
 def _load_vocab() -> tuple[set[str], set[str], set[str]]:
-    """Course codes, student ids and company/role names, read from the database."""
+    """Course codes, student ids and company/role names, read from the database.
+
+    Cached for ``settings.intent_vocab_ttl_s`` seconds: entities must still be
+    matched against real rows (so a hallucinated id cannot occur), but re-reading
+    three tables per question made every request pay three round-trips.
+    """
+    global _vocab_cache
+    ttl = settings.intent_vocab_ttl_s
+    now = time.monotonic()
+    if ttl > 0 and _vocab_cache is not None and (now - _vocab_cache[0]) < ttl:
+        return _vocab_cache[1]
+
     from ..db import query
 
     courses: set[str] = set()
@@ -103,6 +131,8 @@ def _load_vocab() -> tuple[set[str], set[str], set[str]]:
         companies = {r["name"] for r in query("SELECT name FROM companies")}
     except Exception:
         pass
+    if ttl > 0:
+        _vocab_cache = (now, (courses, students, companies))
     return courses, students, companies
 
 

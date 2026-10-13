@@ -26,6 +26,21 @@ from .prompts import ContextBlock
 log = logging.getLogger(__name__)
 
 
+def _ram_available_mb() -> int | None:
+    """Host RAM still available, in MB; ``None`` when psutil is unavailable.
+
+    A module-level function on purpose: the tier selector must be testable
+    without depending on how much memory the machine running the suite happens
+    to have free.
+    """
+    try:
+        import psutil  # type: ignore
+
+        return int(psutil.virtual_memory().available / (1024 * 1024))
+    except Exception:  # pragma: no cover - psutil is a declared dependency
+        return None
+
+
 class LLMError(RuntimeError):
     """Base class for generation failures."""
 
@@ -61,6 +76,13 @@ class LLMClient:
         self._detail: str = "not probed yet"
         self._last_latency_ms: float | None = None
         self._model_missing: bool = False
+        # Models the running Ollama reports as pulled. The tier selector will
+        # not switch to a fallback that is not actually there.
+        self._available_models: set[str] = set()
+        # Which tier produced the last answer: primary (phi3:mini), downgraded
+        # (smaller model) or extractive (no local model at all).
+        self.tier: str = "primary"
+        self.downgrade_reason: str | None = None
         self._probe()
 
     # --- status ---------------------------------------------------------
@@ -76,6 +98,7 @@ class LLMClient:
             response = httpx.get(f"{self.base_url}/api/tags", timeout=2.0)
             response.raise_for_status()
             models = {m.get("name", "") for m in response.json().get("models", [])}
+            self._available_models = set(models)
             available = ", ".join(sorted(models)) or "none"
             # A running server without our model is the common case on a fresh
             # machine. Detect it here so the first request does not spend the
@@ -102,6 +125,44 @@ class LLMClient:
         """
         base = self.model.split(":")[0]
         return any(name == self.model or name.startswith(f"{base}:") for name in models)
+
+    def _model_available(self, name: str) -> bool:
+        """Whether ``name`` is among the models Ollama reports as pulled."""
+        if not name or not self._available_models:
+            return False
+        base = name.split(":")[0]
+        return any(n == name or n.startswith(f"{base}:") for n in self._available_models)
+
+    def select_model(self) -> tuple[str, str]:
+        """Pick the degradation tier for the RAM available right now.
+
+        Three tiers, in order:
+
+        1. ``primary``    phi3:mini.
+        2. ``downgraded`` the smaller fallback (tinyllama) once RAM drops below
+           ``llm_downgrade_ram_mb`` *and* that model is actually pulled.
+        3. ``extractive`` no local model at all once RAM reaches the router's
+           ``ram_floor_mb``; answers are quoted from evidence instead.
+
+        Returns ``(model, tier)``; ``model`` is empty for the extractive tier.
+        """
+        if not settings.llm_tiering:
+            return self.model, "primary"
+        ram = _ram_available_mb()
+        if ram is None:
+            return self.model, "primary"
+        if ram < settings.ram_floor_mb:
+            self.downgrade_reason = f"available RAM {ram} MB below {settings.ram_floor_mb} MB floor"
+            return "", "extractive"
+        if ram < settings.llm_downgrade_ram_mb and self._model_available(
+            self.fallback_model
+        ):
+            self.downgrade_reason = (
+                f"available RAM {ram} MB below {settings.llm_downgrade_ram_mb} MB"
+            )
+            return self.fallback_model, "downgraded"
+        self.downgrade_reason = None
+        return self.model, "primary"
 
     def status(self) -> str:
         return self._status
@@ -139,6 +200,12 @@ class LLMClient:
         if self.is_stub:
             return self._stub_result(question, context or [], model="stub-extractive")
 
+        # Tier selection comes first: RAM may have dropped since the probe.
+        model, tier = self.select_model()
+        self.tier = tier
+        if tier == "extractive":
+            return self._stub_result(question, context or [], model="stub-extractive")
+
         # A missing model will not appear because we waited longer; fail fast and
         # remember, so the second request is instant instead of timing out again.
         if self._model_missing:
@@ -150,13 +217,13 @@ class LLMClient:
         last_error: Exception | None = None
         for attempt in range(settings.llm_max_retries + 1):
             try:
-                text, usage = self._call_ollama(prompt, system, temperature)
+                text, usage = self._call_ollama(prompt, system, temperature, model)
                 latency = (time.perf_counter() - started) * 1000
                 self._last_latency_ms = latency
                 self._status = "ok"
                 return GenerationResult(
                     text=text,
-                    model=self.model,
+                    model=model,
                     stub=False,
                     latency_ms=round(latency, 2),
                     prompt_tokens=int(usage.get("prompt_eval_count", 0) or 0),
@@ -169,7 +236,8 @@ class LLMClient:
                 log.warning("ollama generation attempt %d failed: %s", attempt + 1, exc)
                 time.sleep(min(0.5 * (attempt + 1), 2.0))
 
-        # Every attempt failed: degrade to extraction rather than failing the request.
+        # Tier 3: every attempt failed, so extract rather than fail the request.
+        self.tier = "extractive"
         self._status = "degraded"
         self._detail = f"generation failed ({type(last_error).__name__}); using stub"
         if isinstance(last_error, LLMUnavailable) and "not pulled" in str(last_error):
@@ -179,12 +247,17 @@ class LLMClient:
         return result
 
     def _call_ollama(
-        self, prompt: str, system: str | None, temperature: float
+        self,
+        prompt: str,
+        system: str | None,
+        temperature: float,
+        model: str | None = None,
     ) -> tuple[str, dict[str, Any]]:
         import httpx
 
+        model = model or self.model
         payload: dict[str, Any] = {
-            "model": self.model,
+            "model": model,
             "prompt": prompt,
             "stream": False,
             "keep_alive": settings.ollama_keep_alive,
@@ -206,7 +279,7 @@ class LLMClient:
             raise LLMUnavailable(str(exc)) from exc
 
         if response.status_code == 404:
-            raise LLMUnavailable(f"model {self.model} is not pulled")
+            raise LLMUnavailable(f"model {model} is not pulled")
         response.raise_for_status()
         body = response.json()
         return body.get("response", "").strip(), body
@@ -220,10 +293,16 @@ class LLMClient:
             yield self._stub_result(question, context or [], model="stub-extractive").text
             return
 
+        model, tier = self.select_model()
+        self.tier = tier
+        if tier == "extractive":
+            yield self._stub_result(question, context or [], model="stub-extractive").text
+            return
+
         import httpx
 
         payload: dict[str, Any] = {
-            "model": self.model,
+            "model": model,
             "prompt": prompt,
             "stream": True,
             "keep_alive": settings.ollama_keep_alive,

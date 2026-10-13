@@ -35,6 +35,10 @@ from ..retrieval.intent import (
 log = logging.getLogger(__name__)
 
 ARTEFACT_NAME = "complexity_clf.pkl"
+# Bumped when the training recipe changes materially. An artefact from an older
+# recipe is retrained on load rather than quietly serving numbers that were
+# measured a different way (2 = feedback-weighted training, fixed holdout).
+ARTEFACT_VERSION = 2
 _ORDER: tuple[Complexity, ...] = (Complexity.low, Complexity.medium, Complexity.high)
 
 
@@ -115,6 +119,90 @@ def build_training_set() -> tuple[list[str], list[str]]:
     return questions, labels
 
 
+def static_split() -> tuple[list[str], list[str], list[str], list[str]]:
+    """Fixed train/holdout split of the *derived* corpus.
+
+    The holdout is carved only from the static corpus, so every retrain is
+    scored on exactly the same questions and two accuracy numbers are
+    comparable. Feedback examples join training only: a question the model is
+    being judged on must never become training data, or the delta would be
+    measuring memorisation rather than learning.
+    """
+    from sklearn.model_selection import train_test_split
+
+    questions, labels = build_training_set()
+    stratify = labels if min(labels.count(v) for v in set(labels)) >= 2 else None
+    # train_test_split returns (X_train, X_test, y_train, y_test); return them in
+    # (x_train, y_train, x_test, y_test) order so callers cannot silently pair
+    # questions with the wrong labels.
+    x_train, x_test, y_train, y_test = train_test_split(
+        questions, labels, test_size=0.25, random_state=42, stratify=stratify
+    )
+    return x_train, y_train, x_test, y_test
+
+
+def _harder(complexity: Complexity) -> Complexity:
+    """One step up the complexity ladder; ``high`` is already the top."""
+    return _ORDER[min(_ORDER.index(complexity) + 1, len(_ORDER) - 1)]
+
+
+def feedback_examples(
+    limit: int | None = None,
+) -> tuple[list[str], list[str], dict[str, int]]:
+    """Labelled examples from thumbs ratings (Phase 8, item 1).
+
+    A thumbs-up *confirms* the complexity the router assigned to the question,
+    so the pair becomes a labelled example. A thumbs-down says the answer was
+    not good enough, which for a complexity classifier means the router
+    under-rated the question: the example is relabelled one step harder, which
+    is the correction the router can actually act on. Both outcomes are counted
+    so the dashboard can show how much live signal went into the model.
+
+    Returns ``(questions, labels, {"confirmed", "corrected"})``. An empty log,
+    or a database that is not reachable, is not an error: retraining falls back
+    to the derived corpus rather than failing.
+    """
+    from ..db import query
+
+    try:
+        rows = query(
+            """
+            SELECT q.question AS question, d.complexity AS complexity,
+                   q.feedback AS feedback
+            FROM query_log q
+            JOIN router_decisions d ON d.request_id = q.request_id
+            WHERE q.feedback IS NOT NULL AND q.question IS NOT NULL
+            ORDER BY q.created_at DESC
+            LIMIT ?
+            """,
+            (int(limit if limit is not None else settings.retrain_max_feedback),),
+        )
+    except Exception as exc:  # pragma: no cover - depends on the live schema
+        log.warning("feedback examples unavailable (%s); training on the corpus", exc)
+        return [], [], {"confirmed": 0, "corrected": 0}
+
+    questions: list[str] = []
+    labels: list[str] = []
+    counts = {"confirmed": 0, "corrected": 0}
+    for row in rows:
+        question = (row.get("question") or "").strip()
+        try:
+            assigned = Complexity(row.get("complexity"))
+        except (TypeError, ValueError):
+            continue  # no complexity recorded: nothing to learn from
+        if not question:
+            continue
+        if int(row.get("feedback") or 0) > 0:
+            questions.append(question)
+            labels.append(assigned.value)
+            counts["confirmed"] += 1
+        else:
+            questions.append(question)
+            labels.append(_harder(assigned).value)
+            counts["corrected"] += 1
+    return questions, labels, counts
+
+
 # --------------------------------------------------------------------------
 # The classifier
 # --------------------------------------------------------------------------
@@ -126,12 +214,22 @@ class TrainingReport:
     accuracy: float
     macro_f1: float
     per_class: dict[str, float]
+    # Added with feedback-driven retraining. Defaulted so a report pickled by an
+    # older artefact still loads and still reports its accuracy.
+    holdout: int = 0
+    from_feedback: int = 0
+    confirmed: int = 0
+    corrected: int = 0
 
     def as_dict(self) -> dict:
         return {
             "samples": self.samples,
             "accuracy": round(self.accuracy, 4),
             "macro_f1": round(self.macro_f1, 4),
+            "holdout": self.holdout,
+            "from_feedback": self.from_feedback,
+            "confirmed": self.confirmed,
+            "corrected": self.corrected,
             "per_class_f1": {k: round(v, 4) for k, v in self.per_class.items()},
         }
 
@@ -156,8 +254,14 @@ class ComplexityClassifier:
             try:
                 with path.open("rb") as fh:
                     payload = pickle.load(fh)
+                if int(payload.get("version", 0)) != ARTEFACT_VERSION:
+                    log.info(
+                        "artefact %s is version %s, expected %s; retraining",
+                        path, payload.get("version"), ARTEFACT_VERSION,
+                    )
+                    raise ValueError("stale artefact version")
                 return cls(model=payload["model"], report=payload.get("report"))
-            except Exception as exc:  # pragma: no cover - corrupt artefact
+            except Exception as exc:  # pragma: no cover - corrupt/stale artefact
                 log.warning("could not load %s (%s); retraining", path, exc)
         try:
             return cls.train(save=True)
@@ -166,15 +270,31 @@ class ComplexityClassifier:
             return cls(model=None)
 
     @classmethod
-    def train(cls, save: bool = True) -> "ComplexityClassifier":
+    def train(
+        cls, save: bool = True, use_feedback: bool = True
+    ) -> "ComplexityClassifier":
+        """Fit the classifier on the derived corpus plus live thumbs feedback.
+
+        Feedback rows are weighted by ``settings.retrain_feedback_weight`` so a
+        handful of human verdicts can actually move a corpus of a few hundred
+        derived examples, and the reported accuracy is always measured on the
+        same fixed holdout so the dashboard delta compares like with like.
+        """
         from sklearn.feature_extraction.text import TfidfVectorizer
         from sklearn.linear_model import LogisticRegression
         from sklearn.metrics import accuracy_score, f1_score
-        from sklearn.model_selection import train_test_split
         from sklearn.pipeline import FeatureUnion, Pipeline
         from sklearn.preprocessing import FunctionTransformer
 
-        questions, labels = build_training_set()
+        train_questions, train_labels, holdout_questions, holdout_labels = static_split()
+        fb_questions: list[str] = []
+        fb_labels: list[str] = []
+        counts = {"confirmed": 0, "corrected": 0}
+        if use_feedback:
+            fb_questions, fb_labels, counts = feedback_examples()
+
+        questions = train_questions + fb_questions
+        labels = train_labels + fb_labels
         if len(questions) < 30:
             raise RuntimeError("not enough labelled questions to train")
 
@@ -196,21 +316,28 @@ class ComplexityClassifier:
             ]
         )
 
-        # Keep the split deterministic and stratified where possible.
-        stratify = labels if min(labels.count(v) for v in set(labels)) >= 2 else None
-        x_train, x_test, y_train, y_test = train_test_split(
-            questions, labels, test_size=0.25, random_state=42, stratify=stratify
+        # Only the feedback rows carry weight; the derived examples stay at 1.0
+        # so the baseline behaviour is unchanged when there is no feedback yet.
+        weights = np.asarray(
+            [1.0] * len(train_questions)
+            + [settings.retrain_feedback_weight] * len(fb_questions),
+            dtype=np.float64,
         )
-        pipeline.fit(x_train, y_train)
-        predicted = pipeline.predict(x_test)
+        pipeline.fit(questions, labels, clf__sample_weight=weights)
+        predicted = pipeline.predict(holdout_questions)
+        classes = sorted(set(holdout_labels))
         report = TrainingReport(
             samples=len(questions),
-            accuracy=float(accuracy_score(y_test, predicted)),
-            macro_f1=float(f1_score(y_test, predicted, average="macro")),
+            holdout=len(holdout_questions),
+            from_feedback=len(fb_questions),
+            confirmed=counts["confirmed"],
+            corrected=counts["corrected"],
+            accuracy=float(accuracy_score(holdout_labels, predicted)),
+            macro_f1=float(f1_score(holdout_labels, predicted, average="macro")),
             per_class=dict(
                 zip(
-                    sorted(set(y_test)),
-                    f1_score(y_test, predicted, average=None, labels=sorted(set(y_test))),
+                    classes,
+                    f1_score(holdout_labels, predicted, average=None, labels=classes),
                 )
             ),
         )
@@ -225,7 +352,7 @@ class ComplexityClassifier:
                         "model": pipeline,
                         "report": report,
                         "trained_at": datetime.now(timezone.utc).isoformat(timespec="seconds"),
-                        "version": 1,
+                        "version": ARTEFACT_VERSION,
                     },
                     fh,
                 )

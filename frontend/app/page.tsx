@@ -92,7 +92,16 @@ export default function ChatPage() {
           costInr: res.estimated_cost,
           claimsSupported,
           claimsTotal,
+          claims: traceData?.claims,
+          intent: traceData?.intent ?? null,
           traceId: res.trace_id,
+          // --- Phase 8 add-ons ------------------------------------------
+          clarifyingQuestion: res.clarifying_question,
+          closestRecords: res.closest_records ?? [],
+          conflict: res.conflict,
+          carbon: res.carbon,
+          detectedLanguage: res.detected_language,
+          modelTier: res.model_tier,
         },
       ]);
     } catch (err) {

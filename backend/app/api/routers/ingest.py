@@ -38,6 +38,7 @@ def ingest(payload: IngestRequest) -> IngestResponse:
         skipped_unchanged=result.skipped_unchanged,
         duration_ms=result.duration_ms,
         errors=result.errors,
+        warmed=result.warmed,
     )
 
 

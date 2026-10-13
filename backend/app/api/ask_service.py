@@ -16,6 +16,9 @@ from typing import TYPE_CHECKING, Any
 
 from ..core.schemas import (
     AskResponse,
+    CarbonEstimate,
+    ClosestRecord,
+    ConflictPayload,
     Intent,
     Source,
     TraceClaim,
@@ -24,12 +27,16 @@ from ..core.schemas import (
 )
 from ..core.settings import settings
 from ..db import execute
+from ..eval.carbon import estimate_query_energy
+from ..grounding.conflicts import detect_conflict
 from ..grounding.verifier import GroundingReport, GroundingVerifier
 from ..llm.client import LLMClient
+from ..llm.language import detect_language
 from ..llm.prompts import (
     ContextBlock,
     build_abstention,
     build_answer_prompt,
+    build_clarifying_question,
     build_phrase_prompt,
     is_abstention,
     strip_prompt_echo,
@@ -107,6 +114,14 @@ class PipelineResult:
     estimated_cost: float | None = None
     reasoning: str | None = None
     used_tools: list[str] = field(default_factory=list)
+    # --- Phase 8 add-ons -----------------------------------------------
+    clarifying_question: str | None = None
+    # Populated only on an abstention: the nearest records we did retrieve.
+    closest_records: list[dict[str, Any]] = field(default_factory=list)
+    conflict: dict[str, Any] | None = None
+    carbon: dict[str, Any] | None = None
+    detected_language: str | None = None
+    model_tier: str | None = None
 
     def to_response(self) -> AskResponse:
         return AskResponse(
@@ -119,6 +134,12 @@ class PipelineResult:
             abstained=self.abstained,
             latency_ms=self.latency_ms,
             estimated_cost=self.estimated_cost,
+            clarifying_question=self.clarifying_question,
+            closest_records=[ClosestRecord(**c) for c in self.closest_records],
+            conflict=ConflictPayload(**self.conflict) if self.conflict else None,
+            carbon=CarbonEstimate(**self.carbon) if self.carbon else None,
+            detected_language=self.detected_language,
+            model_tier=self.model_tier,
         )
 
     def to_trace(self) -> TraceResponse:
@@ -416,6 +437,35 @@ class AskPipeline:
 
         latency_ms = round((time.perf_counter() - started) * 1000, 2)
 
+        # --- Phase 8 add-ons ------------------------------------------
+        # Language detection never blocks or rewrites the request; it only
+        # reports what was noticed (experimental, English answer unchanged).
+        detected = detect_language(question)
+        detected_language = None if detected == "en" else detected
+
+        # A clarifying question accompanies an abstention, never a real answer.
+        clarifying = (
+            build_clarifying_question(question, closest=context)
+            if report.abstained
+            else None
+        )
+
+        # Item 3: name the nearest records when we abstain, so "not found" is
+        # still actionable. Only the top of what retrieval returned, and never
+        # on a delivered answer (where the sources are already listed).
+        closest_records = closest_records_from(context) if report.abstained else []
+
+        # Conflicts are reported whenever two retrieved records disagree, even
+        # if the model happened to pick the right one -- hiding the disagreement
+        # would make the answer look more certain than the evidence is.
+        conflict = detect_conflict(retrieved) if not report.abstained else None
+
+        # The pipeline itself does not choose the route; it reports what the
+        # generation tier implies, which is the honest scope for this layer.
+        # The router overwrites the route in the API response when it runs.
+        tier = getattr(self.llm, "tier", None)
+        implied_route = "offline_fallback" if tier in ("extractive", None) else "local_model"
+
         result = PipelineResult(
             request_id=request_id,
             question=question,
@@ -433,6 +483,12 @@ class AskPipeline:
             steps=steps,
             latency_ms=latency_ms,
             used_tools=used_tools,
+            clarifying_question=clarifying,
+            closest_records=closest_records,
+            conflict=conflict,
+            carbon=estimate_query_energy(implied_route, latency_ms),
+            detected_language=detected_language,
+            model_tier=tier,
         )
         return result
 
@@ -646,6 +702,25 @@ class AskPipeline:
             )
         except Exception as exc:  # pragma: no cover - logging must not break a request
             log.warning("could not persist query log: %s", exc)
+
+
+def closest_records_from(
+    context: list[ContextBlock], limit: int = 3
+) -> list[dict[str, Any]]:
+    """The nearest records to name when nothing grounded an answer (item 3).
+
+    Kept as a module function so it can be tested without a database: what
+    matters is that an abstention carries the records the user can act on.
+    """
+    return [
+        {
+            "index": block.index,
+            "record_id": block.record_id,
+            "title": block.title or "",
+            "snippet": block.text[: settings.snippet_max_chars],
+        }
+        for block in context[:limit]
+    ]
 
 
 def _allowed_scopes(user_id: str | None, role: str) -> set[str] | None:

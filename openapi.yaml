@@ -218,6 +218,52 @@ paths:
             application/json:
               schema: { $ref: "#/components/schemas/EligibilityResponse" }
 
+  /placement/eligibility/{student_id}/report.pdf:
+    get:
+      tags: [placement]
+      summary: Downloadable PDF eligibility report (Phase 8, item 11)
+      description: >-
+        Self-contained PDF of the student's eligibility, missing criteria and
+        learning path. Access follows the JSON endpoint: a student may only
+        export their own report.
+      operationId: getEligibilityReportPdf
+      parameters:
+        - { name: student_id, in: path, required: true, schema: { type: string }, example: S102 }
+        - { name: company, in: query, schema: { type: string } }
+        - { name: role, in: query, schema: { type: string } }
+        - { name: user_id, in: query, schema: { type: string }, example: S102 }
+        - { name: requester_role, in: query, schema: { $ref: "#/components/schemas/Role" }, example: student }
+      responses:
+        "200":
+          description: The report as a PDF attachment
+          content:
+            application/pdf:
+              schema: { type: string, format: binary }
+        "403": { description: A student may only export their own report }
+        "404": { description: No eligibility record for this student }
+
+  /placement/cohort-queries:
+    get:
+      tags: [placement]
+      summary: Audit trail of staff cohort queries (Phase 8, item 7)
+      description: >-
+        Query metadata for every request that ranged over many students'
+        records — who ran it, over which cohort, and how many rows it touched.
+        Staff only; reading the trail never returns student records.
+      operationId: listCohortQueries
+      parameters:
+        - { name: limit, in: query, schema: { type: integer, default: 50, minimum: 1, maximum: 500 } }
+        - { name: requester_role, in: query, schema: { $ref: "#/components/schemas/Role" }, example: staff }
+      responses:
+        "200":
+          description: Newest cohort queries first
+          content:
+            application/json:
+              schema:
+                type: array
+                items: { $ref: "#/components/schemas/CohortQuery" }
+        "403": { description: Cohort queries are limited to staff }
+
   /placement/match:
     post:
       tags: [placement]
@@ -358,6 +404,85 @@ components:
         abstained: { type: boolean, default: false }
         latency_ms: { type: [number, "null"] }
         estimated_cost: { type: [number, "null"], description: Cost in INR }
+        # --- Phase 8 add-ons ------------------------------------------
+        clarifying_question:
+          type: [string, "null"]
+          description: Follow-up that narrows an abstained question (item 3)
+        closest_records:
+          type: array
+          description: >-
+            Nearest records retrieval found when the answer abstained, so
+            "not found" is still actionable (item 3). Empty on a real answer.
+          items: { $ref: "#/components/schemas/ClosestRecord" }
+        conflict:
+          anyOf:
+            - $ref: "#/components/schemas/ConflictPayload"
+            - type: "null"
+          description: Set when two retrieved records disagree (item 6)
+        carbon:
+          anyOf:
+            - $ref: "#/components/schemas/CarbonEstimate"
+            - type: "null"
+          description: Rough kWh/INR for this query (item 9)
+        detected_language:
+          type: [string, "null"]
+          description: Non-English input detected by script; experimental (item 10)
+        model_tier:
+          type: [string, "null"]
+          enum: [primary, downgraded, extractive, null]
+          description: Local degradation tier that produced the answer (item 4)
+
+    CohortQuery:
+      type: object
+      description: One audited query over many students' records
+      required: [id, kind, query]
+      properties:
+        id: { type: integer }
+        kind: { type: string, example: eligibility }
+        query: { type: string }
+        company: { type: [string, "null"] }
+        role_title: { type: [string, "null"] }
+        role_id: { type: [integer, "null"] }
+        department: { type: [string, "null"] }
+        user_id: { type: [string, "null"] }
+        role: { type: string, default: staff }
+        result_count: { type: integer, default: 0 }
+        created_at: { type: [string, "null"] }
+
+    ClosestRecord:
+      type: object
+      description: The nearest record when no evidence grounded an answer
+      required: [index, record_id]
+      additionalProperties: false
+      properties:
+        index: { type: integer, description: "Source number in the answer ([S1], [S2] ...)" }
+        record_id: { type: string }
+        title: { type: string }
+        snippet: { type: string }
+
+    ConflictPayload:
+      type: object
+      description: Two retrieved records disagree; the newer one won
+      required: [newer_title, superseded_title]
+      additionalProperties: false
+      properties:
+        newer_title: { type: string }
+        superseded_title: { type: string }
+        newer_index: { type: integer, default: 0 }
+        superseded_index: { type: integer, default: 0 }
+        winner_value: { type: string }
+        loser_value: { type: string }
+        reason: { type: string }
+
+    CarbonEstimate:
+      type: object
+      description: Order-of-magnitude energy estimate, not a measurement
+      required: [kwh, inr]
+      additionalProperties: false
+      properties:
+        kwh: { type: number }
+        inr: { type: number }
+        source: { type: string, default: estimate }
 
     HealthComponent:
       type: object

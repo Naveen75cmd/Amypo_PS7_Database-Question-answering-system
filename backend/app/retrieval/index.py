@@ -30,6 +30,20 @@ log = logging.getLogger(__name__)
 RerankerKind = Literal["feature", "cross_encoder", "none"]
 
 
+def vector_backend_name() -> str:
+    """Name the dense backend a freshly built index would use.
+
+    ``faiss`` when ``faiss-cpu`` is importable, numpy cosine otherwise. Reported
+    by /health, which never builds the index, so the endpoint cannot claim a
+    backend the machine does not have.
+    """
+    try:
+        import faiss  # type: ignore  # noqa: F401
+    except Exception:
+        return "numpy cosine (faiss-cpu not installed)"
+    return "faiss"
+
+
 @dataclass
 class ChunkRecord:
     record_id: str

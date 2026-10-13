@@ -14,6 +14,7 @@ import {
   IconTarget,
   IconBook2,
   IconChecklist,
+  IconShieldLock,
 } from "@tabler/icons-react";
 import { cn } from "@/lib/utils";
 import { api } from "@/lib/api";
@@ -25,6 +26,7 @@ const NAV = [
   { href: "/dashboard", label: "Dashboard", icon: IconDashboard },
   { href: "/knowledge", label: "Knowledge", icon: IconBook2 },
   { href: "/evaluation", label: "Evaluation", icon: IconChecklist },
+  { href: "/audit", label: "Audit trail", icon: IconShieldLock },
 ];
 
 function ResourcePill() {

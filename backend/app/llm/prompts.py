@@ -203,3 +203,39 @@ def build_abstention(closest: list[ContextBlock] | None = None) -> str:
         if titles:
             return f"{base} The closest records I have are: {titles}."
     return base
+
+
+def build_clarifying_question(
+    question: str, closest: list[ContextBlock] | list[str] | None = None
+) -> str | None:
+    """A follow-up that asks for what is missing (Phase 8, item 3).
+
+    ``None`` when there is nothing useful to ask: offering a clarifying question
+    on a question we could fully answer, or offering nothing at all when we
+    could narrow it down, are both worse than staying quiet. Titles double as
+    the candidates, since "which of these did you mean" is answerable from the
+    sources the user can already see.
+    """
+    if not question or not question.strip():
+        return None
+
+    titles: list[str] = []
+    for block in closest or []:
+        title = block if isinstance(block, str) else getattr(block, "title", "")
+        if title and title not in titles:
+            titles.append(title)
+    titles = titles[:3]
+
+    if len(titles) >= 2:
+        options = ", ".join(titles[:-1]) + f" or {titles[-1]}"
+        return f"Which record did you mean — {options}?"
+    if len(titles) == 1:
+        return (
+            f"I found {titles[0]} but nothing that answers this directly. "
+            "Were you looking for something specific in it?"
+        )
+    # Nothing close at all: ask the user to narrow it, in their own words.
+    return (
+        "Could you rephrase that with a specific term — a course code, date, "
+        "policy name or student id?"
+    )

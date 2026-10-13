@@ -11,6 +11,45 @@ export interface Source {
   snippet: string;
 }
 
+export interface CohortQuery {
+  id: number;
+  kind: string;
+  query: string;
+  company: string | null;
+  role_title: string | null;
+  department: string | null;
+  user_id: string | null;
+  role: string;
+  result_count: number;
+  created_at: string | null;
+}
+
+export interface ClosestRecord {
+  index: number;
+  record_id: string;
+  title: string;
+  snippet: string;
+}
+
+export interface ConflictPayload {
+  newer_title: string;
+  superseded_title: string;
+  /** Source numbers the two records carry in the answer ([S1], [S3] ...). */
+  newer_index: number;
+  superseded_index: number;
+  winner_value: string;
+  loser_value: string;
+  reason: string;
+}
+
+export interface CarbonEstimate {
+  kwh: number;
+  inr: number;
+  source: string;
+}
+
+export type ModelTier = "primary" | "downgraded" | "extractive";
+
 export interface AskResponse {
   answer: string;
   sources: Source[];
@@ -21,6 +60,37 @@ export interface AskResponse {
   abstained: boolean;
   latency_ms: number | null;
   estimated_cost: number | null;
+  // --- Phase 8 add-ons -------------------------------------------------
+  /** Follow-up that narrows an abstained question (item 3). */
+  clarifying_question: string | null;
+  /** Nearest records found when the answer abstained (item 3). */
+  closest_records: ClosestRecord[];
+  /** Set when two retrieved records disagree (item 6). */
+  conflict: ConflictPayload | null;
+  /** Rough kWh/INR for this query (item 9). */
+  carbon: CarbonEstimate | null;
+  /** Non-English input detected by script; experimental (item 10). */
+  detected_language: string | null;
+  /** Which local degradation tier answered (item 4). */
+  model_tier: ModelTier | null;
+}
+
+export interface FeedbackResponse {
+  request_id: string;
+  rating: number;
+  recorded: boolean;
+}
+
+export interface RetrainResponse {
+  accuracy: number;
+  holdout: number;
+  from_feedback: number;
+  confirmed: number;
+  corrected: number;
+  macro_f1: number;
+  samples: number;
+  previous_accuracy: number | null;
+  delta: number | null;
 }
 
 export interface TraceStep {
@@ -242,6 +312,25 @@ export const api = {
 
   trace: (requestId: string) => request<TraceResponse>(`/ask/trace/${requestId}`),
 
+  /** Thumbs rating for a previous answer (Phase 8, item 1). */
+  feedback: (payload: { request_id: string; rating: -1 | 0 | 1 }) =>
+    request<FeedbackResponse>("/ask/feedback", {
+      method: "POST",
+      body: JSON.stringify(payload),
+    }),
+
+  /** Staff cohort-query audit trail (item 7). Staff role only. */
+  cohortQueries: (params: { limit?: number; requester_role: Role }) => {
+    const qs = new URLSearchParams();
+    if (params.limit) qs.set("limit", String(params.limit));
+    qs.set("requester_role", params.requester_role);
+    return request<CohortQuery[]>(`/placement/cohort-queries?${qs.toString()}`);
+  },
+
+  /** On-demand classifier retrain; returns the accuracy delta (item 1). */
+  retrain: () =>
+    request<RetrainResponse>("/router/retrain", { method: "POST" }),
+
   history: (params: { limit?: number; user_id?: string | null; requester_role: Role }) => {
     const qs = new URLSearchParams();
     if (params.limit) qs.set("limit", String(params.limit));
@@ -300,6 +389,11 @@ export const api = {
       routing_agreement: number | null;
       cumulative_cost_inr: number;
       always_cloud_cost_inr: number;
+      savings_pct: number;
+      latency_p50_ms: number;
+      latency_p95_ms: number;
+      peak_ram_mb: number;
+      report_path: string | null;
     }>("/eval/run", { method: "POST", body: JSON.stringify({ limit, write_report: true }) }),
 
   resourceStatus: () => request<ResourceStatus>("/resource-status"),

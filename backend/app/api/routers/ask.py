@@ -14,7 +14,15 @@ from fastapi import APIRouter, HTTPException, Query
 
 from ...core.container import get_container
 from ...core.logging import get_request_id
-from ...core.schemas import AskRequest, AskResponse, Role, TraceResponse
+from ...core.schemas import (
+    AskRequest,
+    AskResponse,
+    FeedbackRequest,
+    FeedbackResponse,
+    Role,
+    Route,
+    TraceResponse,
+)
 
 router = APIRouter(tags=["qa"])
 
@@ -63,6 +71,46 @@ def ask(payload: AskRequest) -> AskResponse:
         abstained=execution.abstained,
         latency_ms=execution.latency_ms,
         estimated_cost=execution.estimated_cost,
+        # --- Phase 8 add-ons ------------------------------------------
+        clarifying_question=execution.clarifying_question,
+        closest_records=execution.closest_records or [],
+        conflict=execution.conflict,
+        carbon=execution.carbon,
+        detected_language=execution.detected_language,
+        model_tier=execution.model_tier,
+    )
+
+
+@router.post(
+    "/ask/feedback",
+    response_model=FeedbackResponse,
+    summary="Rate an answer (thumbs up / down)",
+)
+def feedback(payload: FeedbackRequest) -> FeedbackResponse:
+    """Record a thumbs rating against a logged answer.
+
+    This is the signal Phase 8 item 1 retrains the complexity classifier from:
+    ``query_log.feedback`` was in the schema from the start but nothing ever
+    wrote to it, so "retrain from thumbs feedback" had no feedback to learn
+    from. A rating for an unknown request is still recorded as accepted=False
+    rather than erroring, because a dropped thumb must never break the UI.
+    """
+    from ...db import execute, query
+
+    rows = query(
+        "SELECT request_id FROM query_log WHERE request_id = ?", (payload.request_id,)
+    )
+    if not rows:
+        return FeedbackResponse(
+            request_id=payload.request_id, rating=payload.rating, recorded=False
+        )
+
+    execute(
+        "UPDATE query_log SET feedback = ? WHERE request_id = ?",
+        (payload.rating, payload.request_id),
+    )
+    return FeedbackResponse(
+        request_id=payload.request_id, rating=payload.rating, recorded=True
     )
 
 

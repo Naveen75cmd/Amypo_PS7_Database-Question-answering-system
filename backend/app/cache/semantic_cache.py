@@ -19,8 +19,11 @@ import hashlib
 import json
 import logging
 import re
+import time
 from dataclasses import dataclass, field
 from datetime import datetime, timedelta, timezone
+
+import numpy as np
 
 from ..core.settings import settings
 from ..db import execute, query
@@ -58,11 +61,19 @@ class CacheHit:
 
 
 class SemanticCache:
+    # A COUNT(*) on cache_entries ran before *every* lookup — one extra MySQL
+    # round-trip per /ask (it showed up as ~1/3 of the routing path). Same-process
+    # writes already force a reload via ``_loaded_count = -1``; the re-count only
+    # guards against rows changed by another process, so it is throttled to one
+    # check per _COUNT_INTERVAL_S. Set ttl check to 0 to restore the old behaviour.
+    _COUNT_INTERVAL_S = 2.0
+
     def __init__(self, index=None) -> None:
         self.index = index
         self._rows: list[dict] = []
         self._matrix = None
         self._loaded_count = -1
+        self._last_count_at = 0.0
 
     @property
     def embedder(self):
@@ -74,8 +85,16 @@ class SemanticCache:
         rows = query("SELECT COUNT(*) AS n FROM cache_entries")
         return int(rows[0]["n"]) if rows else 0
 
-    def _refresh(self) -> None:
+    def _refresh(self, force: bool = False) -> None:
+        now = time.monotonic()
+        if (
+            not force
+            and self._loaded_count >= 0
+            and (now - self._last_count_at) < self._COUNT_INTERVAL_S
+        ):
+            return  # in-memory rows are at most _COUNT_INTERVAL_S old
         count = self._count()
+        self._last_count_at = now
         if count == self._loaded_count:
             return
         self._rows = query(
@@ -134,15 +153,22 @@ class SemanticCache:
         if vector.size != self._matrix.shape[1]:
             return None
         similarities = self._matrix @ vector
-        best = int(similarities.argmax())
+        # Scope is filtered *before* the best row is chosen. Taking the global
+        # argmax and rejecting it afterwards on scope is wrong: the same question
+        # stored for another scope could be the nearest neighbour and would mask
+        # our own cached answer, making an identical entry unreachable.
+        in_scope = np.array(
+            [row["access_scope"] == access_scope for row in self._rows], dtype=bool
+        )
+        if not in_scope.any():
+            return None
+        best = int(np.where(in_scope, similarities, -np.inf).argmax())
         similarity = float(similarities[best])
         if similarity < settings.cache_cosine:
             return None
 
         row = self._rows[best]
-        # Scope and freshness are hard gates — similarity alone is not enough.
-        if row["access_scope"] != access_scope:
-            return None
+        # Freshness and staleness stay hard gates — similarity alone is not enough.
         try:
             expires = datetime.strptime(row["expires_at"], "%Y-%m-%dT%H:%M:%SZ").replace(
                 tzinfo=timezone.utc

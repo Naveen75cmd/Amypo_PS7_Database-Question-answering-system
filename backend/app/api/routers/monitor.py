@@ -8,6 +8,7 @@ from ...core.schemas import (
     DecisionsResponse,
     MetricsResponse,
     ResourceStatus,
+    RetrainResponse,
     SimulateRequest,
     SimulateResponse,
 )
@@ -55,6 +56,69 @@ def metrics() -> MetricsResponse:
     from ...router.metrics import collect_metrics
 
     return collect_metrics(_router())
+
+
+@router.post(
+    "/router/retrain",
+    response_model=RetrainResponse,
+    summary="Retrain the complexity classifier and report the accuracy delta",
+)
+def retrain() -> RetrainResponse:
+    """On-demand retrain (Phase 8, item 1).
+
+    The brief asks for nightly/on-demand retraining from ``query_log`` plus
+    thumbs feedback, with the accuracy delta shown on the dashboard. There is no
+    scheduler in this app by design — it must run offline from one command — so
+    "on demand" is an endpoint the dashboard calls, and the delta is computed
+    against the accuracy of the model that was live a moment ago.
+
+    Retraining is CPU-bound but short (a few hundred labelled questions), and a
+    failure falls back to the previously loaded model rather than leaving the
+    router with no classifier at all.
+    """
+    from ...core.container import get_container
+    from ...router.classifier import ComplexityClassifier
+
+    try:
+        engine = get_container().get("router")
+    except Exception as exc:  # pragma: no cover - router always available in prod
+        raise HTTPException(status_code=503, detail=f"router unavailable: {exc}") from exc
+
+    previous = getattr(engine.classifier, "report", None)
+    previous_accuracy = previous.accuracy if previous is not None else None
+
+    try:
+        trained = ComplexityClassifier.train(save=True)
+    except Exception as exc:
+        # Keep serving with the model we already have rather than failing hard.
+        raise HTTPException(
+            status_code=503, detail=f"retrain failed: {exc}"
+        ) from exc
+
+    engine.classifier = trained
+    report = trained.report
+    if report is None:  # pragma: no cover - train() always builds a report
+        raise HTTPException(status_code=503, detail="retrain produced no report")
+
+    delta = (
+        round(report.accuracy - previous_accuracy, 4)
+        if previous_accuracy is not None
+        else None
+    )
+    return RetrainResponse(
+        accuracy=round(report.accuracy, 4),
+        macro_f1=round(report.macro_f1, 4),
+        samples=report.samples,
+        previous_accuracy=(
+            round(previous_accuracy, 4) if previous_accuracy is not None else None
+        ),
+        delta=delta,
+        # getattr: an artefact trained by an older recipe has no such fields.
+        holdout=int(getattr(report, "holdout", 0) or 0),
+        from_feedback=int(getattr(report, "from_feedback", 0) or 0),
+        confirmed=int(getattr(report, "confirmed", 0) or 0),
+        corrected=int(getattr(report, "corrected", 0) or 0),
+    )
 
 
 @router.get(

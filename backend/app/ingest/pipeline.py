@@ -32,6 +32,9 @@ class IngestResult:
     skipped_unchanged: int = 0
     duration_ms: float = 0.0
     errors: list[str] = field(default_factory=list)
+    # Phase 8 item 5: historical questions warmed into the semantic cache once
+    # the corpus they ask about is actually in place.
+    warmed: int = 0
 
 
 def _now() -> str:
@@ -171,8 +174,15 @@ def ingest_all(
     path: Path | str | None = None,
     structured_dir: Path | str | None = None,
     force: bool = False,
+    warm: bool = True,
 ) -> IngestResult:
-    """Full ingestion: structured rows -> record cards -> documents -> index."""
+    """Full ingestion: structured rows -> record cards -> documents -> index.
+
+    ``warm`` also pre-warms the semantic cache from the historical query log
+    (Phase 8, item 5), which is only worth doing here — the questions are known
+    and the corpus they ask about has just landed. It is best-effort and bounded
+    by ``settings.cache_prewarm_n``.
+    """
     started = time.perf_counter()
     result = IngestResult()
 
@@ -189,16 +199,36 @@ def ingest_all(
     result.records += card_count
     result.errors.extend(card_errors)
 
+    # New rows must be visible to entity matching immediately, not after the
+    # vocab TTL expires.
+    from ..retrieval.intent import invalidate_vocab_cache
+
+    invalidate_vocab_cache()
+
     docs, chunks, skipped, doc_errors = ingest_documents(doc_root, force=force)
     result.documents = docs
     result.chunks = chunks
     result.skipped_unchanged = skipped
     result.errors.extend(doc_errors)
 
+    if warm:
+        from ..eval.preload import warm_from_pipeline
+
+        try:
+            report = warm_from_pipeline()
+            result.warmed = int(report.get("warmed", 0))
+            log.info(
+                "pre-warmed %d/%d historical questions into the cache",
+                result.warmed, report.get("attempted", 0),
+            )
+        except Exception as exc:  # pragma: no cover - never fail an ingest
+            log.warning("cache pre-warm skipped: %s", exc)
+
     result.duration_ms = round((time.perf_counter() - started) * 1000, 2)
     log.info(
-        "ingest complete: %d documents, %d chunks, %d records, %d skipped",
+        "ingest complete: %d documents, %d chunks, %d records, %d skipped, %d warmed",
         result.documents, result.chunks, result.records, result.skipped_unchanged,
+        result.warmed,
     )
     return result
 

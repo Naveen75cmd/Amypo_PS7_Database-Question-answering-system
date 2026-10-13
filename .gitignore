@@ -26,6 +26,10 @@ out/
 *.tsbuildinfo
 next-env.d.ts
 
+# Local run scratch: dev-server/API logs, pid files and ad-hoc probe dumps
+*.log
+*.pid
+
 # Env
 .env
 .env.local

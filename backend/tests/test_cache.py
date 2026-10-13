@@ -42,6 +42,27 @@ def cache(temp_db) -> SemanticCache:
     return SemanticCache(_FakeIndex())
 
 
+def test_scope_duplicate_does_not_mask_the_hit(cache) -> None:
+    """The same question cached for two scopes must hit in both.
+
+    Regression: the lookup used to take the nearest neighbour across every scope
+    and only then check the scope, so one of the two copies was unreachable and
+    a warmed entry looked like a miss.
+    """
+    for scope, answer in (("public", "public answer [S1]"), ("staff", "staff answer [S2]")):
+        cache.store(
+            "What is the hostel curfew?",
+            answer,
+            [{"record_id": "doc:hostel-policy#1", "snippet": "21:30"}],
+            0.9,
+            scope,
+        )
+    assert cache.lookup("What is the hostel curfew?", "public").answer == "public answer [S1]"
+    assert cache.lookup("What is the hostel curfew?", "staff").answer == "staff answer [S2]"
+    # And a scope with nothing stored is still a miss, not a cross-scope leak.
+    assert cache.lookup("What is the hostel curfew?", "student:S999") is None
+
+
 def test_normalization_ignores_case_and_punctuation() -> None:
     assert normalize_question("  What is MY CGPA?!  ") == "what is my cgpa"
     assert normalize_question("what is my cgpa") == normalize_question("What is my CGPA?")

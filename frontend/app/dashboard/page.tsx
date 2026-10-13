@@ -1,7 +1,7 @@
 "use client";
 
 import * as React from "react";
-import { useQuery, useQueryClient } from "@tanstack/react-query";
+import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import {
   Bar,
   BarChart,
@@ -82,6 +82,88 @@ function LiveTiles() {
         tone={ollamaOk ? undefined : "warn"}
       />
     </div>
+  );
+}
+
+function RouterRetrain() {
+  // On-demand retrain with the accuracy delta (Phase 8, item 1).
+  //
+  // The spec's example line is "router improved from 84% to 89% agreement";
+  // this renders exactly that, and only after a retrain actually ran — before
+  // then it says so rather than inventing a baseline.
+  const client = useQueryClient();
+  const retrain = useMutation({
+    mutationFn: api.retrain,
+    onSuccess: () => client.invalidateQueries({ queryKey: ["metrics"] }),
+  });
+
+  const result = retrain.data;
+
+  return (
+    <section className="rounded-lg border bg-card p-3">
+      <div className="flex items-start justify-between gap-3">
+        <div>
+          <h2 className="text-[13px] font-medium text-muted-foreground">
+            Self-optimizing router
+          </h2>
+          <p className="mt-0.5 text-xs text-muted-foreground">
+            Retrains from the benchmark plus your thumbs ratings in the query log. Both
+            numbers are scored on the same held-out questions, so the delta is comparable.
+          </p>
+        </div>
+        <button
+          onClick={() => retrain.mutate()}
+          disabled={retrain.isPending}
+          className="rounded-md border px-2.5 py-1 text-xs transition-colors duration-150 hover:bg-muted disabled:opacity-50"
+        >
+          {retrain.isPending ? "Retraining…" : "Retrain"}
+        </button>
+      </div>
+
+      {retrain.isError && (
+        <p className="mt-2 text-xs text-[var(--destructive)]">
+          Retrain failed; the previous model is still in use.
+        </p>
+      )}
+
+      {result && (
+        <div className="mt-3 flex flex-wrap items-baseline gap-x-4 gap-y-1 text-sm">
+          {result.previous_accuracy != null && result.delta != null ? (
+            <>
+              <span className="tabular-nums">
+                {Math.round(result.previous_accuracy * 100)}%
+                <span className="mx-1 text-muted-foreground">→</span>
+                {Math.round(result.accuracy * 100)}%
+              </span>
+              <span
+                className={cn(
+                  "tabular-nums text-xs",
+                  result.delta >= 0
+                    ? "text-[var(--accent)]"
+                    : "text-amber-600 dark:text-amber-400"
+                )}
+              >
+                {result.delta >= 0 ? "+" : ""}
+                {(result.delta * 100).toFixed(1)} pts
+              </span>
+            </>
+          ) : (
+            <span className="tabular-nums">
+              First retrain: {Math.round(result.accuracy * 100)}% accuracy
+            </span>
+          )}
+          <span className="text-xs text-muted-foreground">
+            macro-F1 {(result.macro_f1 * 100).toFixed(1)}% on {result.samples} samples ·{" "}
+            {result.holdout} held out
+          </span>
+          <span className="text-xs text-muted-foreground">
+            {result.from_feedback > 0
+              ? `${result.confirmed} thumbs-up confirmed, ${result.corrected} thumbs-down corrected`
+              : "no thumbs feedback yet — rate an answer in chat to feed the next retrain"}
+          </span>
+        </div>
+      )}
+    </section>
   );
 }
 
@@ -285,6 +367,7 @@ export default function DashboardPage() {
       <div className="mx-auto max-w-[960px] space-y-5 px-6 py-6">
         <h1 className="text-base font-semibold tracking-tight">Dashboard</h1>
         <LiveTiles />
+        <RouterRetrain />
         <MetricsCharts />
         <DecisionLog />
       </div>

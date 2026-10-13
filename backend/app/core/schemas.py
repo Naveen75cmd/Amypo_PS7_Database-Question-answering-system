@@ -83,6 +83,66 @@ class AskRequest(BaseModel):
     complexity_hint: Complexity | None = None
 
 
+class ConflictPayload(BaseModel):
+    """Two retrieved records disagree; the newer one won (Phase 8, item 6)."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    newer_title: str
+    superseded_title: str
+    # Source numbers ([S1], [S2] ...) the two records carry in the answer, so
+    # the UI can point at the passages instead of only naming their titles.
+    newer_index: int = 0
+    superseded_index: int = 0
+    winner_value: str = ""
+    loser_value: str = ""
+    reason: str = ""
+
+
+class CohortQuery(BaseModel):
+    """One audited query that ranged over many students' records (item 7)."""
+
+    model_config = ConfigDict(extra="ignore")
+
+    id: int
+    kind: str
+    query: str
+    company: str | None = None
+    role_title: str | None = None
+    role_id: int | None = None
+    department: str | None = None
+    user_id: str | None = None
+    role: str = "staff"
+    result_count: int = 0
+    created_at: str | None = None
+
+
+class ClosestRecord(BaseModel):
+    """The nearest record when we could not answer (Phase 8, item 3).
+
+    An abstention that only says "not found" leaves the user with nowhere to go;
+    naming what *was* retrieved lets them see whether the question was misread,
+    and gives them something to correct.
+    """
+
+    model_config = ConfigDict(extra="forbid")
+
+    index: int = Field(description="Source number in the answer ([S1], [S2] ...)")
+    record_id: str
+    title: str = ""
+    snippet: str = ""
+
+
+class CarbonEstimate(BaseModel):
+    """Rough energy/cost of this query vs always-cloud (Phase 8, item 9)."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    kwh: float
+    inr: float
+    source: str = "estimate"
+
+
 class AskResponse(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
@@ -96,6 +156,61 @@ class AskResponse(BaseModel):
     abstained: bool = False
     latency_ms: float | None = None
     estimated_cost: float | None = Field(default=None, description="INR")
+    # --- Phase 8 add-ons -----------------------------------------------
+    # Shown alongside an abstention so the user can narrow the question.
+    clarifying_question: str | None = None
+    # What retrieval found even though nothing grounded an answer.
+    closest_records: list[ClosestRecord] = Field(default_factory=list)
+    # Set only when two retrieved records genuinely disagree.
+    conflict: ConflictPayload | None = None
+    # Energy/cost estimate for the route this answer took.
+    carbon: CarbonEstimate | None = None
+    # Experimental: non-English input detected by script; answered in English.
+    detected_language: str | None = None
+    # Which local degradation tier produced the answer (primary/downgraded/
+    # extractive), so the UI can show the visible "degraded" state.
+    model_tier: str | None = None
+
+
+class FeedbackRequest(BaseModel):
+    """A thumbs rating for a previous answer (Phase 8, item 1)."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    request_id: str = Field(min_length=1, description="The answer being rated")
+    # +1 helpful, -1 not helpful. Written to query_log.feedback so the
+    # classifier can be retrained from real signal rather than guesses.
+    rating: int = Field(ge=-1, le=1)
+    user_id: str | None = None
+
+
+class FeedbackResponse(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    request_id: str
+    rating: int
+    recorded: bool
+
+
+class RetrainResponse(BaseModel):
+    """Result of an on-demand classifier retrain, for the dashboard delta."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    accuracy: float
+    macro_f1: float
+    samples: int
+    # The headline number: what agreement was before vs after this retrain.
+    previous_accuracy: float | None = None
+    delta: float | None = None
+    # How the number was produced, so the delta is auditable rather than magic:
+    # every retrain is scored on the same fixed holdout, and the training set
+    # grew by ``from_feedback`` rated questions (``confirmed`` thumbs-up,
+    # ``corrected`` thumbs-down relabelled one step harder).
+    holdout: int = 0
+    from_feedback: int = 0
+    confirmed: int = 0
+    corrected: int = 0
 
 
 class HealthComponent(BaseModel):
@@ -216,6 +331,8 @@ class IngestResponse(BaseModel):
     skipped_unchanged: int
     duration_ms: float
     errors: list[str] = Field(default_factory=list)
+    # Phase 8 item 5: historical questions warmed into the semantic cache.
+    warmed: int = 0
 
 
 # --------------------------------------------------------------------------

@@ -109,6 +109,13 @@ class RouteExecution:
     estimated_cost: float
     trace_id: str | None = None
     pipeline_result: Any = None
+    # --- Phase 8 add-ons, carried from the pipeline result --------------
+    clarifying_question: str | None = None
+    closest_records: Any = None
+    conflict: Any = None
+    carbon: Any = None
+    detected_language: str | None = None
+    model_tier: str | None = None
 
 
 class RouterEngine:
@@ -231,7 +238,7 @@ class RouterEngine:
         oracle = self._oracle(
             structured=structured, complexity=complexity, ram_ok=ram_ok,
             llm_healthy=llm_healthy, bandwidth_ok=bandwidth_ok, quota_ok=quota_ok,
-            cache_hit=cache_hit is not None,
+            cache_hit=cache_hit is not None, local_latency_ms=local_latency,
         )
 
         return RoutingDecision(
@@ -267,13 +274,20 @@ class RouterEngine:
         bandwidth_ok: bool,
         quota_ok: bool,
         cache_hit: bool,
+        local_latency_ms: float,
     ) -> Route:
         """The route a perfect policy would pick: cheapest path meeting quality.
 
-        Cache if we can; SQL tools when the question is structured; otherwise
-        local when the machine can cope and the question is easy, cloud for hard
-        questions when the cloud is usable, and the extractive fallback when the
-        local model is not.
+        Cache if we can; SQL tools when the question is structured; local when
+        the machine can cope and can serve the question inside the latency
+        budget; cloud only when the local path would blow that budget and the
+        cloud is usable; extractive when no model can run at all.
+
+        The latency gate matters: without it this oracle claimed the cloud for
+        every hard question, while the policy (correctly) answered them locally
+        whenever the local model met the budget — so the router scored as
+disagreeing with its own ideal for being *cheaper*. Both halves now encode
+        the same rule, which is what "routing accuracy" is supposed to measure.
         """
         if cache_hit:
             return Route.cache
@@ -283,7 +297,7 @@ class RouterEngine:
             return Route.offline_fallback
         if structured:
             return Route.local_model
-        if complexity in (Complexity.low, Complexity.medium):
+        if local_latency_ms <= settings.latency_budget_ms:
             return Route.local_model
         if bandwidth_ok and quota_ok:
             return Route.cloud_api
@@ -358,7 +372,26 @@ class RouterEngine:
             abstained = result.abstained
             degraded = degraded or result.degraded
 
+        # Phase 8 add-ons travel with the pipeline result when there is one.
+        # A cache hit has no pipeline, so these stay None rather than being
+        # recomputed from stale inputs.
+        clarifying = getattr(result, "clarifying_question", None) if result else None
+        closest = getattr(result, "closest_records", None) if result else None
+        conflict = getattr(result, "conflict", None) if result else None
+        carbon = getattr(result, "carbon", None) if result else None
+        detected = getattr(result, "detected_language", None) if result else None
+        tier = getattr(result, "model_tier", None) if result else None
+
         latency_ms = round((time.perf_counter() - started) * 1000, 2)
+
+        if carbon is None:
+            # Cache and cloud hits have no pipeline result, but they still
+            # deserve the sustainability line item. Measured after latency_ms
+            # because the energy estimate scales with how long the call took.
+            from ..eval.carbon import estimate_query_energy
+
+            carbon = estimate_query_energy(route, latency_ms)
+
         self.observe_latency(route, latency_ms)
         self._persist(request_id, query, decision, latency_ms, cost)
 
@@ -375,6 +408,12 @@ class RouterEngine:
             estimated_cost=cost,
             trace_id=getattr(result, "request_id", None),
             pipeline_result=result,
+            clarifying_question=clarifying,
+            closest_records=closest,
+            conflict=conflict,
+            carbon=carbon,
+            detected_language=detected,
+            model_tier=tier,
         )
 
     # ------------------------------------------------------------------

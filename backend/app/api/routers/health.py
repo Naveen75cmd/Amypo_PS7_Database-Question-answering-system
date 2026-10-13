@@ -40,9 +40,15 @@ def _index_status() -> HealthComponent:
         n = int(row["n"]) if row else 0
         if n == 0:
             return HealthComponent(status="not_loaded", detail="no chunks indexed yet")
-        # Vectors live in FAISS and are rebuilt from chunk text on load, so
-        # "indexed" is simply whether MySQL is populated.
-        return HealthComponent(status="ok", detail=f"{n} chunks, vectors in FAISS")
+        # Vectors are rebuilt from chunk text on load, so "indexed" is simply
+        # whether MySQL is populated. The backend name is probed rather than
+        # assumed: claiming FAISS on a box without faiss-cpu would be a lie the
+        # same response contradicts in `versions`.
+        from ...retrieval.index import vector_backend_name
+
+        return HealthComponent(
+            status="ok", detail=f"{n} chunks, vectors in {vector_backend_name()}"
+        )
     except Exception as exc:  # pragma: no cover
         return HealthComponent(status="down", detail=str(exc))
 

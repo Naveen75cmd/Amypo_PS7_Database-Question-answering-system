@@ -20,13 +20,20 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--structured", default=str(settings.synthetic_dir),
                         help="directory of structured CSVs (default: data/synthetic)")
     parser.add_argument("--force", action="store_true", help="re-index unchanged documents")
+    parser.add_argument("--no-warm", action="store_true",
+                        help="skip pre-warming the cache from the query log")
     parser.add_argument("--json", action="store_true", help="machine-readable output")
     args = parser.parse_args(argv)
 
     configure_logging(settings.log_level)
     get_connection()  # ensures migrations ran
 
-    result = ingest_all(path=Path(args.path), structured_dir=Path(args.structured), force=args.force)
+    result = ingest_all(
+        path=Path(args.path),
+        structured_dir=Path(args.structured),
+        force=args.force,
+        warm=not args.no_warm,
+    )
     stats = corpus_stats()
 
     payload = {
@@ -35,6 +42,7 @@ def main(argv: list[str] | None = None) -> int:
         "records_written": result.records,
         "skipped_unchanged": result.skipped_unchanged,
         "duration_ms": result.duration_ms,
+        "warmed": result.warmed,
         "errors": result.errors,
         "corpus": stats,
     }
@@ -46,6 +54,7 @@ def main(argv: list[str] | None = None) -> int:
         print(f"chunks written    : {result.chunks}")
         print(f"records written   : {result.records}")
         print(f"skipped unchanged : {result.skipped_unchanged}")
+        print(f"cache pre-warmed  : {result.warmed} historical questions")
         print(f"duration          : {result.duration_ms:.0f} ms")
         print(f"corpus            : {stats['documents']} documents, "
               f"{stats['chunks']} chunks ({stats['record_cards']} record cards), "

@@ -1,8 +1,14 @@
 """Phase 5 definition of done: the routing policy's scenario behaviour.
 
-Fakes are used for the LLM (this machine has no model pulled) and the classifier
-(so complexity is fixed per test); the monitor and cloud are the real objects, and
-the cache is the real one against a throwaway schema.
+Fakes are used for the LLM and the classifier (so complexity is fixed per test);
+the monitor and cloud are the real objects, and the cache is the real one against
+a throwaway schema.
+
+Host RAM is *pinned* rather than sampled. The routing policy is a function of
+(complexity, RAM, bandwidth, quota), so reading the live machine made these tests
+change verdict whenever a local model was resident — two gigabytes of Ollama is
+enough to push available RAM below the 900 MB floor and route everything to the
+offline fallback. RAM is an input here, so the tests supply it.
 """
 
 from __future__ import annotations
@@ -68,6 +74,7 @@ def _engine(
     complexity: Complexity = Complexity.high,
     llm_healthy: bool = True,
     ram_floor_mb: int = 900,
+    ram_mb: int = 4000,
     bandwidth: str = "stable",
     quota: int = 100,
     monkeypatch: pytest.MonkeyPatch | None = None,
@@ -77,6 +84,11 @@ def _engine(
     if monkeypatch is not None:
         monkeypatch.setattr(settings, "ram_floor_mb", ram_floor_mb, raising=False)
         monkeypatch.setattr(settings, "latency_budget_ms", latency_budget_ms, raising=False)
+        # Pinned host reading: the EWMA seeds from the first sample, so the
+        # decision sees exactly ``ram_mb`` no matter what is running locally.
+        monkeypatch.setattr(
+            ResourceMonitor, "_read_host", lambda self: (ram_mb, 5.0), raising=True
+        )
     monitor = ResourceMonitor(
         bandwidth=BandwidthSimulator(scenario=bandwidth),
         cloud=SimulatedCloud(quota_per_day=quota, failure_rate=0.0),
@@ -154,20 +166,20 @@ def test_offline_bandwidth_never_routes_to_cloud(monkeypatch) -> None:
     assert decision.features["bandwidth_kbps"] == 0
 
 
-def test_repeated_question_hits_the_cache(temp_db) -> None:
+def test_repeated_question_hits_the_cache(temp_db, monkeypatch) -> None:
     cache = SemanticCache(_FakeIndex())
     cache.store("What is the attendance policy?", "75% attendance [S1]", [], 0.9, "public")
-    engine = _engine(cache=cache)
+    engine = _engine(cache=cache, monkeypatch=monkeypatch)
     decision = engine.decide("What is the attendance policy?")
     assert decision.route == Route.cache
     assert decision.oracle_route == Route.cache
     assert decision.cache_hit is not None
 
 
-def test_cache_is_not_shared_across_scopes(temp_db) -> None:
+def test_cache_is_not_shared_across_scopes(temp_db, monkeypatch) -> None:
     cache = SemanticCache(_FakeIndex())
     cache.store("What is the attendance policy?", "75%", [], 0.9, "staff")
-    engine = _engine(cache=cache)
+    engine = _engine(cache=cache, monkeypatch=monkeypatch)
     # A student asking the same question must not receive the staff entry.
     decision = engine.decide("What is the attendance policy?", user_id="S102", role="student")
     assert decision.route != Route.cache
@@ -184,7 +196,7 @@ def test_cache_scope_helper() -> None:
 # --------------------------------------------------------------------------
 
 
-def test_cache_route_executes_without_touching_the_pipeline(temp_db) -> None:
+def test_cache_route_executes_without_touching_the_pipeline(temp_db, monkeypatch) -> None:
     cache = SemanticCache(_FakeIndex())
     cache.store(
         "What is the attendance policy?",
@@ -193,17 +205,17 @@ def test_cache_route_executes_without_touching_the_pipeline(temp_db) -> None:
         0.9,
         "public",
     )
-    engine = _engine(cache=cache)
+    engine = _engine(cache=cache, monkeypatch=monkeypatch)
     execution = engine.run("req-cache-1", "What is the attendance policy?")
     assert execution.route == Route.cache
     assert execution.answer == "75% attendance [S1]"
     assert execution.estimated_cost == 0.0
 
 
-def test_decisions_are_persisted_and_agreement_reported(temp_db) -> None:
+def test_decisions_are_persisted_and_agreement_reported(temp_db, monkeypatch) -> None:
     cache = SemanticCache(_FakeIndex())
     cache.store("What is the attendance policy?", "75%", [], 0.9, "public")
-    engine = _engine(cache=cache)
+    engine = _engine(cache=cache, monkeypatch=monkeypatch)
     engine.run("req-1", "What is the attendance policy?")
     rows = engine.decisions(limit=10)
     assert rows, "the decision must be written to router_decisions"

@@ -121,6 +121,13 @@ class Settings(BaseSettings):
     ollama_base_url: str = "http://127.0.0.1:11434"
     ollama_model: str = "phi3:mini"
     ollama_fallback_model: str = "tinyllama"
+    # Tier 2 of the three-tier local degradation: when *available* RAM falls
+    # below this, unload phi3:mini and serve the smaller fallback model rather
+    # than jumping straight to the extractive path. Tier 3 is ram_floor_mb.
+    # Prefixed ``llm_`` (not ``model_``) because pydantic reserves ``model_``.
+    llm_downgrade_ram_mb: int = 1400
+    # Kill switch for the tier selector (tests pin the tier instead of the host).
+    llm_tiering: bool = True
     ollama_timeout_s: float = 45.0
     ollama_num_ctx: int = 4096
     ollama_keep_alive: str = "10m"
@@ -142,6 +149,26 @@ class Settings(BaseSettings):
     # --- cache ----------------------------------------------------------
     cache_cosine: float = 0.92
     cache_ttl_s: int = 60 * 60 * 24
+    # Phase 8 item 5: how many of the historical questions to warm into the
+    # cache at ingest time. 0 disables pre-warming (the tests use 0 so a warm
+    # run never answers 200 questions during the suite).
+    cache_prewarm_n: int = 25
+
+    # --- retraining from live feedback (Phase 8, item 1) -----------------
+    # How many rated questions a retrain pulls from the query log, and how much
+    # each one counts against the derived static examples. A handful of thumbs
+    # ratings must be able to move a 280-example corpus, and a human verdict is
+    # worth far more than a label derived by the same rule the model is trying
+    # to learn, so rated rows carry ``retrain_feedback_weight``.
+    retrain_max_feedback: int = 200
+    retrain_feedback_weight: float = 20.0
+
+    # --- cache pre-warming scopes (Phase 8, item 5) ----------------------
+    # A cache entry is keyed by access scope, so warming only the anonymous
+    # ``public`` scope would never be hit: the UI always sends a role, and a
+    # student sends their id. These are the identities the demo uses, warmed
+    # with the answer that identity is entitled to (never a shared key).
+    cache_prewarm_scopes: tuple[str, ...] = ("staff", "student:S102")
 
     # --- router ---------------------------------------------------------
     ram_floor_mb: int = 900
@@ -162,6 +189,12 @@ class Settings(BaseSettings):
     # --- access control -------------------------------------------------
     staff_roles: tuple[str, ...] = ("staff", "admin")
     log_pii: bool = False
+
+    # --- query understanding --------------------------------------------
+    # TTL for the course/student/company vocab that entity matching checks
+    # against. 0 disables caching (exact but 3 DB round-trips per question).
+    # The test suite sets 0 so an INSERT is visible to the very next call.
+    intent_vocab_ttl_s: float = 10.0
 
 
 @lru_cache(maxsize=1)

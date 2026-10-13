@@ -9,10 +9,14 @@ many students' records is an auditable event.
 
 from __future__ import annotations
 
+import logging
+
 from fastapi import APIRouter, HTTPException, Query
+from fastapi.responses import Response
 
 from ...core.container import get_container
 from ...core.schemas import (
+    CohortQuery,
     EligibilityResponse,
     MatchRequest,
     MatchResponse,
@@ -23,6 +27,8 @@ from ...core.schemas import (
 )
 
 router = APIRouter(tags=["placement"])
+
+log = logging.getLogger(__name__)
 
 
 def _engine():
@@ -42,6 +48,38 @@ def _deny_cohort(role: Role) -> None:
             status_code=403,
             detail="Cohort queries are limited to staff; a student may only see their own eligibility.",
         )
+
+
+@router.get(
+    "/placement/cohort-queries",
+    response_model=list[CohortQuery],
+    summary="Audit trail of staff cohort queries (Phase 8, item 7)",
+)
+def cohort_queries(
+    limit: int = Query(default=50, ge=1, le=500),
+    requester_role: Role = Query(default=Role.staff),
+) -> list[CohortQuery]:
+    """Every query that ranged over many students' records, newest first.
+
+    Writing the audit row is not enough on its own: an audit trail nobody can
+    read is not a control. Staff only, and it returns metadata about the *query*
+    (who ran it, over which cohort, how many rows it touched) rather than the
+    student records themselves, so reading the trail never widens access.
+    """
+    from ...db import query
+
+    _deny_cohort(requester_role)
+    rows = query(
+        """
+        SELECT id, kind, query, company, role_title, role_id, department,
+               user_id, `role`, result_count, created_at
+        FROM cohort_queries
+        ORDER BY id DESC
+        LIMIT ?
+        """,
+        (int(limit),),
+    )
+    return [CohortQuery(**row) for row in rows]
 
 
 @router.get(
@@ -107,6 +145,66 @@ def eligibility(
             user_id=user_id, requester_role=requester_role.value, result_count=len(results),
         )
     return EligibilityResponse(results=results, total=len(results))
+
+
+@router.get(
+    "/placement/eligibility/{student_id}/report.pdf",
+    summary="Downloadable PDF eligibility report (Phase 8, item 11)",
+    responses={200: {"content": {"application/pdf": {}}}},
+)
+def eligibility_report_pdf(
+    student_id: str,
+    company: str | None = None,
+    role: str | None = None,
+    user_id: str | None = None,
+    requester_role: Role = Query(default=Role.student),
+) -> Response:
+    """Render the student's eligibility as a self-contained PDF.
+
+    Access follows the same rule as the JSON endpoint: a student may only export
+    their own report, so this cannot be used to harvest other students' records.
+    """
+    from ...placement.export import build_eligibility_pdf, pdf_filename
+
+    if not _is_staff(requester_role) and user_id != student_id:
+        raise HTTPException(
+            status_code=403,
+            detail="A student may only export their own eligibility report.",
+        )
+
+    engine = _engine()
+    results = engine.eligibility(student_id=student_id, company=company, role=role)
+    if not results:
+        raise HTTPException(status_code=404, detail=f"No record for student {student_id}.")
+
+    student = engine._student(student_id)
+    student_name = student["name"] if student else student_id
+
+    # Learning path is a nice-to-have: a gap-analysis failure must not stop the
+    # report the user actually asked for.
+    learning_path: list = []
+    try:
+        gap = engine.skill_gap(student_id, company=company, role=role)
+        if gap is not None:
+            learning_path = list(gap.learning_path)
+    except Exception as exc:  # pragma: no cover - never block the export
+        log.warning("learning path unavailable for PDF: %s", exc)
+
+    try:
+        pdf = build_eligibility_pdf(
+            student_id, str(student_name), results, learning_path
+        )
+    except RuntimeError as exc:
+        raise HTTPException(status_code=503, detail=str(exc)) from exc
+
+    return Response(
+        content=pdf,
+        media_type="application/pdf",
+        headers={
+            "Content-Disposition": f'attachment; filename="{pdf_filename(student_id)}"',
+            "Content-Length": str(len(pdf)),
+        },
+    )
 
 
 @router.post(

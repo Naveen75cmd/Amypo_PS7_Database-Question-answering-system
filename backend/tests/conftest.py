@@ -24,6 +24,56 @@ if str(BACKEND_ROOT) not in sys.path:
 
 
 @pytest.fixture(autouse=True)
+def exact_vocab(monkeypatch: pytest.MonkeyPatch):
+    """Disable the entity-vocab TTL so an INSERT is visible to the next call.
+
+    Production caches the course/student/company vocab for
+    settings.intent_vocab_ttl_s seconds; a test that inserts a student and then
+    asks about it must not lose the race to that cache.
+    """
+    from app.core.settings import settings
+    from app.retrieval import intent
+
+    monkeypatch.setattr(settings, "intent_vocab_ttl_s", 0.0, raising=False)
+    intent.invalidate_vocab_cache()
+    yield
+    intent.invalidate_vocab_cache()
+
+
+@pytest.fixture(autouse=True)
+def deterministic_llm(monkeypatch: pytest.MonkeyPatch, request: pytest.FixtureRequest):
+    """Keep the suite off the local Ollama unless a test asks for the real model.
+
+    Whether ``ollama serve`` happens to be running on the machine must not change
+    what the suite measures: by default generation uses the deterministic
+    extractive stub — the same offline path the demo falls back to — so results
+    are reproducible and the suite stays fast. A test that genuinely needs a
+    pulled model opts in with ``@pytest.mark.real_model``.
+    """
+    if request.node.get_closest_marker("real_model"):
+        yield
+        return
+
+    from app.core.settings import settings
+
+    monkeypatch.setattr(settings, "stub_llm", True, raising=False)
+    yield
+
+
+@pytest.fixture(autouse=True)
+def no_cache_prewarm(monkeypatch: pytest.MonkeyPatch):
+    """Ingest must not answer 25 historical questions during the suite.
+
+    Pre-warming is exercised deliberately by its own tests; everywhere else it
+    is off so an ingest test stays an ingest test.
+    """
+    from app.core.settings import settings
+
+    monkeypatch.setattr(settings, "cache_prewarm_n", 0, raising=False)
+    yield
+
+
+@pytest.fixture(autouse=True)
 def block_network(monkeypatch: pytest.MonkeyPatch, request: pytest.FixtureRequest):
     """Block outbound sockets unless a test opts out with @pytest.mark.allow_network."""
     if request.node.get_closest_marker("allow_network"):
