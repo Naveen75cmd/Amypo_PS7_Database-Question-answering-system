@@ -8,7 +8,6 @@ checks the actual artefacts ``make eval`` produces.
 from __future__ import annotations
 
 import json
-import subprocess
 import sys
 from pathlib import Path
 
@@ -200,25 +199,32 @@ def test_eval_endpoint_rejects_an_empty_kind_filter(client, temp_db) -> None:
 
 
 def test_evaluate_script_is_the_make_eval_entry_point() -> None:
-    """`make eval` runs scripts/evaluate.py; it must at least parse --help."""
+    """`make eval` runs scripts/evaluate.py; its CLI must parse --help.
+
+    Run in-process with runpy rather than as a subprocess: on Windows, a
+    freshly spawned interpreter can fail to initialise (STATUS_DLL_INIT_FAILED)
+    when the suite holds the whole index in RAM, which would report the *script*
+    as broken when it is the machine that could not start a process. Executing
+    the file as ``__main__`` exercises the same argparse entry point and the
+    same imports, and fails for the same reasons a real failure would.
+    """
+    import io
+    import runpy
+    from contextlib import redirect_stdout
+
     script = PROJECT_ROOT / "scripts" / "evaluate.py"
     assert script.exists(), "scripts/evaluate.py is the Phase 9 CLI entry point"
     makefile = (PROJECT_ROOT / "Makefile").read_text(encoding="utf-8")
     assert "scripts/evaluate.py" in makefile
-    def spawn() -> subprocess.CompletedProcess:
-        return subprocess.run(
-            [sys.executable, str(script), "--help"],
-            capture_output=True,
-            text=True,
-            timeout=120,
-            cwd=str(PROJECT_ROOT),
-        )
 
-    proc = spawn()
-    if proc.returncode == 0xC0000142:  # STATUS_DLL_INIT_FAILED, Windows only
-        # The suite holds the whole index in RAM, so a freshly spawned child
-        # can fail to initialise before it runs a single line of our code.
-        # That is the machine, not the script: retry once, then judge.
-        proc = spawn()
-    assert proc.returncode == 0, proc.stderr
-    assert "usage" in proc.stdout.lower()
+    argv, captured = sys.argv[:], io.StringIO()
+    sys.argv = [str(script), "--help"]
+    try:
+        with redirect_stdout(captured):
+            with pytest.raises(SystemExit) as exit_info:
+                runpy.run_path(str(script), run_name="__main__")
+    finally:
+        sys.argv = argv
+
+    assert exit_info.value.code == 0, captured.getvalue()
+    assert "usage" in captured.getvalue().lower()
