@@ -225,6 +225,46 @@ def test_pipeline_abstains_on_system_prompt_disclosure(pipeline) -> None:
 
 
 # --------------------------------------------------------------------------
+# Relevance gate: retrieval always returns a top-k, but "retrieved" is not
+# "relevant", and an off-topic passage must not be quoted back as the answer.
+# --------------------------------------------------------------------------
+
+
+def test_relevance_reads_the_sparse_score_and_ignores_a_scoreless_run() -> None:
+    """A dense-only run carries no BM25 score, so the gate stays off."""
+    from app.api.ask_service import AskPipeline
+    from app.retrieval.index import Retrieved
+
+    def passage(bm25: float) -> Retrieved:
+        return Retrieved(
+            record_id="r1", text="text", title="Title", section=None,
+            updated_at="", access_scope="public", bm25_score=bm25,
+        )
+
+    assert AskPipeline._relevance([]) is None
+    assert AskPipeline._relevance([passage(0.0), passage(0.0)]) is None
+    assert AskPipeline._relevance([passage(3.0), passage(7.5)]) == 7.5
+
+
+def test_pipeline_abstains_when_nothing_relevant_is_retrieved(pipeline) -> None:
+    """The old failure: the hostel-fee passage answered a Wi-Fi question."""
+    result = _answer(pipeline, "What is the Wi-Fi password for the hostel?")
+    assert result.abstained
+    assert "could not find this" in result.answer.lower()
+    generate = next(s for s in result.steps if s.id == "generate")
+    assert any("top retrieval score" in item for item in generate.items)
+
+
+def test_relevance_gate_keeps_answering_questions_the_corpus_covers(pipeline) -> None:
+    """The gate must not turn a well-covered question into an abstention."""
+    result = _answer(pipeline, "What is the family income limit for need-based aid?")
+    assert not result.abstained
+    assert result.sources
+    generate = next(s for s in result.steps if s.id == "generate")
+    assert not any("top retrieval score" in item for item in generate.items)
+
+
+# --------------------------------------------------------------------------
 # Structured path: citations, course scope, access control
 # --------------------------------------------------------------------------
 

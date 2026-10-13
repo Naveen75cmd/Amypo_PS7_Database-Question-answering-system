@@ -161,8 +161,13 @@ def test_write_report_writes_json_and_standalone_html(report, tmp_path, monkeypa
         report["run_id"],
     ):
         assert marker in html_text, marker
-    # No external assets: the report must open offline from disk.
-    assert "http://" not in html_text and "https://" not in html_text
+    # No external assets: the report must open offline from disk. The config
+    # block legitimately names the loopback Ollama endpoint when a model is
+    # running, so only a non-loopback URL would mean the report needs a network.
+    offline_text = html_text.replace("http://127.0.0.1", "").replace(
+        "http://localhost", ""
+    )
+    assert "http://" not in offline_text and "https://" not in offline_text
     assert "<script" not in html_text
 
 
@@ -200,12 +205,20 @@ def test_evaluate_script_is_the_make_eval_entry_point() -> None:
     assert script.exists(), "scripts/evaluate.py is the Phase 9 CLI entry point"
     makefile = (PROJECT_ROOT / "Makefile").read_text(encoding="utf-8")
     assert "scripts/evaluate.py" in makefile
-    proc = subprocess.run(
-        [sys.executable, str(script), "--help"],
-        capture_output=True,
-        text=True,
-        timeout=120,
-        cwd=str(PROJECT_ROOT),
-    )
+    def spawn() -> subprocess.CompletedProcess:
+        return subprocess.run(
+            [sys.executable, str(script), "--help"],
+            capture_output=True,
+            text=True,
+            timeout=120,
+            cwd=str(PROJECT_ROOT),
+        )
+
+    proc = spawn()
+    if proc.returncode == 0xC0000142:  # STATUS_DLL_INIT_FAILED, Windows only
+        # The suite holds the whole index in RAM, so a freshly spawned child
+        # can fail to initialise before it runs a single line of our code.
+        # That is the machine, not the script: retry once, then judge.
+        proc = spawn()
     assert proc.returncode == 0, proc.stderr
     assert "usage" in proc.stdout.lower()

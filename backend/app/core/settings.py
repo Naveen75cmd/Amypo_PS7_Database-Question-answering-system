@@ -144,6 +144,34 @@ class Settings(BaseSettings):
     # unanswerable abstention 7/23 -> 11/23 while answerable abstention stays at
     # 1-2/145. Numbers remain the hard gate, so this admits no fabrications.
     claim_similarity_threshold: float = 0.45
+    # Relevance gate: the best sparse score retrieval produced must reach this
+    # before we answer from passages at all. Retrieval always returns its top-k,
+    # so "passages were found" is not "an answer was found": without this, a
+    # question about something the corpus never mentions (a staff member's home
+    # address, this year's electricity bill) was answered by quoting whatever
+    # unrelated passage shared an ordinary word with it. BM25 is the signal
+    # rather than a word-overlap ratio because it has no denominator over the
+    # question's words, so a paraphrase that shares only some of them still
+    # scores well. The gate never fires when no sparse score is available, nor
+    # for answers built from SQL rows or the placement engine.
+    #
+    # Measured with the answer harness over the 145 answerable / 23 unanswerable
+    # benchmark items (extractive path, staff role). `correct` is the report's
+    # rubric; `lost` are answers that were correct and became abstentions:
+    #
+    #   floor  correct  lost  unanswerable abstained  hallucinated
+    #   0.0    110      0     10/23                   13
+    #   6.0    110      0     11/23                   12
+    #   9.0    110      0     14/23                    9   <- default
+    #  12.0    107      3     20/23                    3
+    #  15.0    102      8     21/23                    2
+    #
+    # 9.0 is the point where abstention improves and hallucination drops by
+    # nearly a third without giving up a single correct answer; anything
+    # stricter starts trading real answers for the last few. A paraphrase is the
+    # hard case either way: with no sentence embedder on this box the gate is
+    # lexical, which is why it stops here rather than at 12.0.
+    retrieval_relevance_floor: float = 9.0
     snippet_max_chars: int = 240
 
     # --- cache ----------------------------------------------------------

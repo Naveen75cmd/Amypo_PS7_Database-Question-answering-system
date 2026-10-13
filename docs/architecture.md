@@ -133,7 +133,15 @@ request by `LLMClient.select_model()` from the *available* host RAM:
    `degraded: true` and `model_tier: "extractive"`.
 
 Evidence insufficient or unsupported is separate from resource degradation: it
-abstains with the closest records and a clarifying question.
+abstains with the closest records and a clarifying question. Two gates decide
+it. Before generation, the **relevance gate** compares the best BM25 score
+retrieval produced with `retrieval_relevance_floor` and, when nothing is
+relevant enough, abstains without calling the model at all — retrieval always
+returns its top-k, so "passages were found" is not "an answer was found".
+After generation, the verifier checks each claim against its cited passage and
+the answer's confidence against `verifier_threshold`. Structured answers (SQL
+rows, the placement engine, an explicit no-record template, an access denial)
+skip the relevance gate because they are built from records rather than prose.
 
 ## Phase map
 

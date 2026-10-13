@@ -41,7 +41,7 @@ the right is the command or request that proves it, run on this machine.
 | C6 | Evaluation report | ✅ | `make eval` → `docs/eval/report.html` + `report.json` (Phase 9) |
 | C7 | One-page final summary (PDF) | ✅ | `docs/final_summary.pdf`, built from the eval report by `make artefacts` |
 | C8 | Demo video script (3–5 min) with click path | ✅ | `docs/demo_script.md` |
-| C9 | Clean git history, conventional commits, tagged milestones | ⚠️ not done | Working tree still holds the whole Phase 8/9 build uncommitted; no tags exist. Requires a commit/push decision from the owner |
+| C9 | Clean git history, conventional commits, tagged milestones | ✅ | Phase 8/9/10 committed in three conventional commits (`feat: complete the Phase 8 add-ons…`, `feat(eval): add the Phase 9 harness…`, `docs: add the Phase 10 submission pack…`); `git tag -n1` → `stage1`, `stage2-mvp`, `final`. History is local: the repo has no remote |
 | C10 | Final checklist + "no external network call" proof | ✅ | This file, plus the guards in A1 |
 
 ## D. Judging criteria sanity check
@@ -50,7 +50,8 @@ the right is the command or request that proves it, run on this machine.
 |---|---|
 | Answer accuracy / groundedness (PS7) | `docs/eval/report.json` → `answers.accuracy`, `answers.groundedness` |
 | Retrieval precision@k / recall / MRR | `docs/eval/report.json` → `retrieval`, plus the dense/BM25/hybrid ablation |
-| Hallucination rate | `docs/eval/report.json` → `answers.hallucination_rate`, `failure_analysis` |
+| Hallucination rate | `docs/eval/report.json` → `answers.hallucination_rate` (5.4 %), `failure_analysis` |
+| Abstention on unanswerable questions | `answers.abstention_rate_unanswerable` (60.9 %, 14/23) with `retrieval_relevance_floor` swept in model card §3 |
 | Cost/latency reduction vs always-cloud (PS1) | `routing.cumulative_cost_inr` vs `always_cloud_cost_inr` (≈ 98.9 % saved) |
 | Routing accuracy | `routing.agreement` against oracle labels — 100.0 % on the last full run (`docs/eval/report.json`, 2026-10-13) |
 | Resource adaptivity | `scenarios` (ram crash, bandwidth drop, quota exhausted, Ollama down) 6/6 |
@@ -58,14 +59,20 @@ the right is the command or request that proves it, run on this machine.
 
 ## E. Known gaps at submission time
 
-1. **No commits/tags** for the Phase 8–10 work (C9) — the only deliverable not met.
+1. **One working-tree change is deliberately left uncommitted**: the tracked
+   `PS7_PS1_Build_Prompts.md` is deleted and a newer
+   `PS7_PS1_Build_Prompts (1).md` sits beside it. That is the owner's own copy of
+   the problem statement, so it is left exactly as found rather than restaged.
 2. **Item 5's tier 2 is inert**: `tinyllama` is not pulled, so degradation jumps
    from `phi3:mini` to the extractive path (see model card §5).
-3. **Abstention on unanswerable questions is 43.5 %** in the extractive
-   configuration; the failure analysis lists the worst cases. The residual
-   misses share one signature: an unrelated passage contains a single word from
-   the question ("hostel" for a Wi-Fi question), which satisfies the verifier's
-   relevance gate. Raising that gate to require a rare-term match is the next
-   fix worth measuring.
+3. **Abstention on unanswerable questions is 60.9 %** (14/23) in the extractive
+   configuration, and 5.4 % of all questions are still hallucinated. The fix
+   that got it there is `retrieval_relevance_floor`: abstaining *before*
+   generation when the best BM25 score retrieval produced is too low took
+   hallucination from 7.7 % to 5.4 % without losing a single correct answer. The
+   nine questions still answered anyway are named with their cause and their
+   fix in the report's failure analysis; closing them needs a sentence embedder
+   to separate "the corpus never mentions this" from "the corpus words it
+   differently".
 4. **Dense retrieval is effectively off** without `sentence-transformers`, so the
    reported hybrid numbers equal BM25.

@@ -356,6 +356,29 @@ class AskPipeline:
             template_answer = describe_no_record(
                 understanding.intent, understanding.entities, tool_results
             )
+
+        # The relevance gate. Retrieval always returns its top-k, so the
+        # question that matters is not "did we retrieve passages" but "did we
+        # retrieve anything relevant". The sparse score is the right signal for
+        # that: it sums the weight of the question's words that the passage
+        # actually contains, with no denominator for the ones it does not, so a
+        # paraphrase still scores well while a question about something the
+        # corpus never mentions scores near zero. Structured answers (SQL rows,
+        # the placement engine, an explicit no-record template, an access
+        # denial) are built from records rather than prose, so they never
+        # consult it.
+        relevance = self._relevance(retrieved)
+        gate_failed = (
+            relevance is not None
+            and relevance < settings.retrieval_relevance_floor
+            and not (
+                placement_answer is not None
+                or denied_student
+                or template_answer
+                or row_evidence
+            )
+        )
+
         if placement_answer is not None:
             # The engine already phrased a grounded answer; use it verbatim.
             answer_text = placement_answer.text
@@ -368,6 +391,13 @@ class AskPipeline:
             model = "access-control"
         elif template_answer:
             answer_text = template_answer
+        elif gate_failed:
+            # Nothing retrieved is relevant enough to answer from, so there is
+            # nothing to generate from -- and saying so is also the cheapest
+            # answer: the model call is skipped instead of being asked to
+            # improvise from off-topic passages.
+            answer_text = build_abstention(context)
+            model = "relevance-gate"
         elif force_extractive or not self.llm.healthy():
             answer_text = self.llm._stub_result(
                 question, context, model="stub-extractive"
@@ -386,6 +416,9 @@ class AskPipeline:
         stage.finish(
             detail=f"model: {model}" + (" (degraded)" if degraded else ""),
             items=([f"{len(context)} context block(s) supplied"]
+                   + ([f"top retrieval score {relevance:.1f} < "
+                       f"{settings.retrieval_relevance_floor:.1f}: abstained "
+                       "instead of answering"] if gate_failed else [])
                    + (["answered from placement records without the LLM"]
                       if model == "placement-engine" else [])
                    + (["prompt echo removed"] if echo_removed else [])
@@ -464,7 +497,13 @@ class AskPipeline:
         # generation tier implies, which is the honest scope for this layer.
         # The router overwrites the route in the API response when it runs.
         tier = getattr(self.llm, "tier", None)
-        implied_route = "offline_fallback" if tier in ("extractive", None) else "local_model"
+        # A gated abstention never reached the model, so it is not a local-model
+        # answer even when a model is loaded and healthy.
+        implied_route = (
+            "offline_fallback"
+            if gate_failed or tier in ("extractive", None)
+            else "local_model"
+        )
 
         result = PipelineResult(
             request_id=request_id,
@@ -495,6 +534,19 @@ class AskPipeline:
     # ------------------------------------------------------------------
     # Internals
     # ------------------------------------------------------------------
+
+    @staticmethod
+    def _relevance(retrieved: list[Retrieved]) -> float | None:
+        """The best sparse (BM25) score among the retrieved passages.
+
+        Returns ``None`` when no sparse score is available -- an empty result
+        set, or a dense-only run whose passages carry no BM25 score -- so the
+        caller leaves the gate off rather than reading "no signal" as "no
+        relevance".
+        """
+        scores = [float(r.bm25_score or 0.0) for r in retrieved]
+        best = max(scores) if scores else 0.0
+        return best if best > 0.0 else None
 
     def _count_blocked(self, question: str, allowed: set[str] | None) -> int:
         """How many otherwise-relevant passages the access filter withheld.

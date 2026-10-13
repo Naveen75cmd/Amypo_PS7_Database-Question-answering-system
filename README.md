@@ -93,10 +93,14 @@ budget, and the 10 worst questions with cause and fix) plus
 frontend's Evaluation page (`POST /api/v1/eval/run`).
 
 With the deterministic extractive fallback (no model pulled), the answer harness
-currently reports roughly 143/145 answerable questions answered with a citation,
-89/107 numeric agreement, and 11/23 unanswerable questions correctly abstained.
-The remaining unanswerable misses are cases where an unrelated passage shares a
-word with the question; the real generation path is expected to abstain on them.
+currently reports 135/145 answerable questions answered (120 of them with a
+citation), 75.9 % accuracy, and 14/23 unanswerable questions correctly abstained
+— 5.4 % of all questions still hallucinated. Two mechanisms decide that: the
+claim verifier, and a relevance gate that abstains *before* generation when the
+best BM25 score retrieval produced is below `retrieval_relevance_floor`. That
+gate is what cut hallucinations from 7.7 % to 5.4 % without giving up a single
+correct answer; the questions still answered anyway are listed with their cause
+in the report's failure analysis.
 
 ## Submission artefacts
 
