@@ -76,8 +76,16 @@ export default function EvaluationPage() {
         {result && (
           <div className="space-y-3">
             <p className="text-[13px] text-muted-foreground">
-              Run {result.run_id} · {result.total} questions
+              Run {result.run_id} · {result.total} questions ·{" "}
+              {result.latency_p50_ms.toFixed(0)}/{result.latency_p95_ms.toFixed(0)} ms
+              p50/p95 · peak RSS {result.peak_ram_mb.toFixed(0)} MB
             </p>
+            {result.report_path && (
+              <p className="text-[13px] text-muted-foreground">
+                Full report (JSON + HTML, with ablations, sweeps and failure
+                analysis): <code className="font-mono">{result.report_path}</code>
+              </p>
+            )}
             <div className="grid grid-cols-2 gap-3 md:grid-cols-3">
               {METRICS.map(({ key, label, pct }) => {
                 const value = result[key];
@@ -101,8 +109,11 @@ export default function EvaluationPage() {
         {!result && !error && (
           <p className="rounded-lg border bg-card px-3 py-4 text-[13px] text-muted-foreground">
             The benchmark replays labelled questions through the real pipeline and
-            reports accuracy, grounding, retrieval and routing metrics. The eval
-            harness lands in Phase 9; the buttons will report that until then.
+            reports accuracy, grounding, retrieval and routing metrics. Quick run
+            samples 40 questions (stratified across kinds); the full benchmark runs
+            all 168. Every run also writes the standalone report to{" "}
+            <code className="font-mono">docs/eval/report.html</code> — the same
+            file <code className="font-mono">make eval</code> produces.
           </p>
         )}
       </div>
