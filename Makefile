@@ -5,7 +5,7 @@ PY ?= python
 BACKEND = cd backend &&
 FRONTEND = cd frontend &&
 
-.PHONY: install install-frontend db db-down seed ingest index api web dev test test-backend eval clean
+.PHONY: install install-frontend db db-down seed ingest index api web dev test test-backend eval artefacts clean
 
 install:
 	$(PY) -m pip install -r backend/requirements.txt
@@ -47,7 +47,12 @@ test:
 	$(FRONTEND) npm run typecheck
 
 eval:
-	$(BACKEND) $(PY) -m app.eval.answer_eval
+	$(BACKEND) $(PY) ../scripts/evaluate.py
+
+# Submission pack: architecture diagram, one-page summary, Postman collection.
+# The summary reads docs/eval/report.json, so run `make eval` first.
+artefacts:
+	$(PY) scripts/make_artifacts.py
 
 clean:
 	rm -rf data/artifacts data/index

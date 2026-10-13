@@ -120,12 +120,20 @@ the criteria reject.
 
 ## Graceful degradation
 
-Three tiers of local degradation before anything is refused:
+Three tiers of local degradation before anything is refused, selected per
+request by `LLMClient.select_model()` from the *available* host RAM:
 
-1. `phi3:mini` → `tinyllama` when RAM drops (auto-downgrade).
-2. LLM unavailable or too slow → extractive `offline_fallback` (flagged
-   `degraded: true`).
-3. Evidence insufficient or unsupported → abstention with the closest records.
+1. `phi3:mini` while RAM stays above `llm_downgrade_ram_mb` (default 1400 MB).
+2. `tinyllama` when RAM falls below `llm_downgrade_ram_mb` — but only if that
+   model is actually pulled; if it is not, the request stays on tier 1 rather
+   than downgrading to something that would fail. Reported as
+   `model_tier: "downgraded"` on the response.
+3. RAM at or below `ram_floor_mb` (default 900 MB), the LLM unavailable, or
+   every attempt failed → extractive `offline_fallback`, flagged
+   `degraded: true` and `model_tier: "extractive"`.
+
+Evidence insufficient or unsupported is separate from resource degradation: it
+abstains with the closest records and a clarifying question.
 
 ## Phase map
 
@@ -138,3 +146,30 @@ Three tiers of local degradation before anything is refused:
 | 5 | PS1 router, monitor, cache, simulator, metrics |
 | 6 | Placement eligibility, matching, skill gaps, what-if |
 | 7 | Frontend: chat, thought chain, sources, dashboard, placement |
+| 9 | Evaluation harness: ablations, sweeps, scenarios, load test, report |
+
+## Evaluation (Phase 9)
+
+`app.eval.harness.run_harness()` replays the 168-question benchmark through the
+real `AskPipeline` and the real `RouterEngine` — no mocks — and derives every
+number the report needs from that one pass:
+
+* **answers**: accuracy (gold citation + hard number gate), groundedness,
+  citation validity against the `chunks` table, hallucination and abstention
+  rates, per-route latency;
+* **ablations**: dense / BM25 / hybrid / hybrid+rerank, plus the same items
+  re-run with `verifier_threshold = 0` (gate off) so the delta is exactly what
+  the grounding gate buys;
+* **sweeps**: verifier confidence is re-derived offline from the gate-off pass
+  (`abstained = confidence < t`), cache cosine from nearest-other-question
+  similarity, RAM floor from logged resource samples plus live `decide()` calls;
+* **scenarios**: the six named failure modes (RAM crash, Ollama down, quota,
+  offline, bandwidth) asserted against expected routing behaviour;
+* **load test**: 20 concurrent users through `decide` + `answer` against the
+  shared MySQL pool, reporting throughput, p95 and the p95/p50 queueing ratio.
+
+The harness writes nothing to `query_log`/`router_decisions` and disables
+resource-sample persistence while scenarios run, so an evaluation never
+pollutes the demo data. `scripts/evaluate.py` (the `make eval` target) adds the
+load test and writes `docs/eval/report.{json,html}`; `POST /api/v1/eval/run`
+runs the same harness for the frontend's Evaluation page.

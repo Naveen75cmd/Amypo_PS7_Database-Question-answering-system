@@ -32,7 +32,9 @@ cd backend && python -m uvicorn app.main:app --reload --port 8000
 ```
 
 MySQL exposes the exact data (grades, attendance, schedules, chunk text and
-citations); embeddings live in FAISS. Connection defaults match compose
+citations); embeddings live in FAISS when `faiss-cpu` is installed and in a
+numpy exact-cosine index otherwise (`/health` names the active backend).
+Connection defaults match compose
 (`amypo` / `amypo` on `127.0.0.1:3306`) and are overridable with `AMYPO_MYSQL_*`.
 
 Then, in a second terminal:
@@ -74,11 +76,48 @@ python -m app.router               # classifier accuracy + savings vs always-clo
 python -m app.router --train       # retrain the complexity classifier
 ```
 
+The Phase 9 harness ties those together into one reproducible artefact:
+
+```bash
+make eval                                  # or: cd backend && python ../scripts/evaluate.py
+make eval -- --limit 40 --no-load-test     # quick run
+```
+
+It replays the 168-question benchmark through the real pipeline and writes
+`docs/eval/report.html` (self-contained: headline metrics, the dense/BM25/hybrid/
+hybrid+rerank and with/without-verifier ablations, verifier/cache/RAM-floor
+threshold sweeps with an accuracy-vs-hallucination plot, the six resource
+scenarios with pass/fail, the 20-user load test, peak RSS against the 8 GB
+budget, and the 10 worst questions with cause and fix) plus
+`docs/eval/report.json` with the raw numbers. The same run is reachable from the
+frontend's Evaluation page (`POST /api/v1/eval/run`).
+
 With the deterministic extractive fallback (no model pulled), the answer harness
 currently reports roughly 143/145 answerable questions answered with a citation,
 89/107 numeric agreement, and 11/23 unanswerable questions correctly abstained.
 The remaining unanswerable misses are cases where an unrelated passage shares a
 word with the question; the real generation path is expected to abstain on them.
+
+## Submission artefacts
+
+Everything the final submission needs is generated, not hand-drawn, so it cannot
+drift from the code:
+
+```bash
+make artefacts        # or: python scripts/make_artifacts.py
+```
+
+| Artefact | What it is |
+|---|---|
+| `docs/architecture.png` / `.pdf` | Component diagram (UI → API → router/monitor → retrieval/cache → LLM/verifier/placement → MySQL/index/eval) |
+| `docs/final_summary.pdf` | One page: problem, approach, innovations, and the headline numbers pulled from the last `docs/eval/report.json` |
+| `docs/postman_collection.json` | Postman v2.1 collection derived from `openapi.yaml` (import, set `baseUrl`, run) |
+| `docs/model_card.md` | Models, licences, training data, thresholds, footprint, failure modes |
+| `docs/demo_script.md` | The 3–5 minute walkthrough with its exact click path |
+| `docs/submission_checklist.md` | Hard constraints, API contract and deliverables, each with its evidence |
+
+Regenerate the diagram, the summary and the collection in one step after changing
+the architecture, the eval numbers or the API.
 
 ## Models
 
@@ -122,6 +161,24 @@ docs/         architecture, evaluation reports, model card
 
 The backend and the tests need MySQL running. `python -m pytest` bootstraps a
 throwaway `amypo_test` schema so it never disturbs the seeded `amypo` database.
+
+## Ports and troubleshooting
+
+| Service | Port | Notes |
+|---|---|---|
+| Frontend (Next.js) | 3000 | `npm run dev`; proxies `/api/v1` to the backend, so no CORS setup is needed |
+| Backend (FastAPI) | 8000 | Swagger at `/docs`, spec at `/openapi.json`, health at `/api/v1/health` |
+| MySQL | 3306 | `amypo` (seeded) and `amypo_test` (throwaway, created by the suite) |
+| Ollama | 11434 | Loopback only |
+
+| Symptom | Cause and fix |
+|---|---|
+| `can't connect to MySQL` | `docker compose up -d --wait mysql` (or `make db`), then `make seed ingest index` |
+| `/api/v1/ask` answers say "offline mode" | Ollama is down or `phi3:mini` is not pulled: `ollama serve`, `ollama pull phi3:mini` |
+| Answers quote evidence instead of generating | RAM below the 900 MB floor with the model resident, or the model is unavailable. This is the three-tier fallback working, not a fault |
+| `index is empty` | Run `python -m app.ingest --path ../data/raw --structured ../data/synthetic` |
+| Tests unexpectedly slow | A local Ollama makes tests use the model; the suite pins the deterministic stub unless a test is marked `real_model` |
+| `pip install -r requirements.txt` fails on `reportlab`/`matplotlib` | They are declared dependencies, needed for the PDF export and `make artefacts` |
 
 ## Notes on the spec
 

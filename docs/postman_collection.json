@@ -1,0 +1,551 @@
+{
+  "info": {
+    "name": "AMYPO API",
+    "description": "Derived from openapi.yaml by scripts/make_artifacts.py \u2014 regenerate rather than editing, so the collection cannot drift from the spec.",
+    "schema": "https://schema.getpostman.com/json/collection/v2.1.0/collection.json"
+  },
+  "variable": [
+    {
+      "key": "baseUrl",
+      "value": "http://127.0.0.1:8000/api/v1"
+    }
+  ],
+  "item": [
+    {
+      "name": "Answer a question from AMYPO records with citations",
+      "request": {
+        "method": "POST",
+        "header": [
+          {
+            "key": "Content-Type",
+            "value": "application/json"
+          }
+        ],
+        "url": {
+          "raw": "{{baseUrl}}/ask",
+          "host": [
+            "{{baseUrl}}"
+          ],
+          "path": [
+            "ask"
+          ],
+          "query": [],
+          "variable": []
+        },
+        "description": "",
+        "body": {
+          "mode": "raw",
+          "raw": "{\n  \"question\": \"What is the minimum attendance required to sit exams?\",\n  \"user_id\": \"S102\"\n}",
+          "options": {
+            "raw": {
+              "language": "json"
+            }
+          }
+        }
+      }
+    },
+    {
+      "name": "Full reasoning trace for a previous request",
+      "request": {
+        "method": "GET",
+        "header": [
+          {
+            "key": "Content-Type",
+            "value": "application/json"
+          }
+        ],
+        "url": {
+          "raw": "{{baseUrl}}/ask/trace/:request_id",
+          "host": [
+            "{{baseUrl}}"
+          ],
+          "path": [
+            "ask",
+            "trace",
+            ":request_id"
+          ],
+          "query": [],
+          "variable": [
+            {
+              "key": "request_id",
+              "value": ""
+            }
+          ]
+        },
+        "description": ""
+      }
+    },
+    {
+      "name": "Run the benchmark suite",
+      "request": {
+        "method": "POST",
+        "header": [
+          {
+            "key": "Content-Type",
+            "value": "application/json"
+          }
+        ],
+        "url": {
+          "raw": "{{baseUrl}}/eval/run",
+          "host": [
+            "{{baseUrl}}"
+          ],
+          "path": [
+            "eval",
+            "run"
+          ],
+          "query": [],
+          "variable": []
+        },
+        "description": "",
+        "body": {
+          "mode": "raw",
+          "raw": "{}",
+          "options": {
+            "raw": {
+              "language": "json"
+            }
+          }
+        }
+      }
+    },
+    {
+      "name": "Component health",
+      "request": {
+        "method": "GET",
+        "header": [
+          {
+            "key": "Content-Type",
+            "value": "application/json"
+          }
+        ],
+        "url": {
+          "raw": "{{baseUrl}}/health",
+          "host": [
+            "{{baseUrl}}"
+          ],
+          "path": [
+            "health"
+          ],
+          "query": [],
+          "variable": []
+        },
+        "description": ""
+      }
+    },
+    {
+      "name": "Ingest documents and structured rows",
+      "request": {
+        "method": "POST",
+        "header": [
+          {
+            "key": "Content-Type",
+            "value": "application/json"
+          }
+        ],
+        "url": {
+          "raw": "{{baseUrl}}/ingest",
+          "host": [
+            "{{baseUrl}}"
+          ],
+          "path": [
+            "ingest"
+          ],
+          "query": [],
+          "variable": []
+        },
+        "description": "",
+        "body": {
+          "mode": "raw",
+          "raw": "{}",
+          "options": {
+            "raw": {
+              "language": "json"
+            }
+          }
+        }
+      }
+    },
+    {
+      "name": "Aggregate quality and cost metrics",
+      "request": {
+        "method": "GET",
+        "header": [
+          {
+            "key": "Content-Type",
+            "value": "application/json"
+          }
+        ],
+        "url": {
+          "raw": "{{baseUrl}}/metrics",
+          "host": [
+            "{{baseUrl}}"
+          ],
+          "path": [
+            "metrics"
+          ],
+          "query": [],
+          "variable": []
+        },
+        "description": ""
+      }
+    },
+    {
+      "name": "Audit trail of staff cohort queries (Phase 8, item 7)",
+      "request": {
+        "method": "GET",
+        "header": [
+          {
+            "key": "Content-Type",
+            "value": "application/json"
+          }
+        ],
+        "url": {
+          "raw": "{{baseUrl}}/placement/cohort-queries?limit=&requester_role=staff",
+          "host": [
+            "{{baseUrl}}"
+          ],
+          "path": [
+            "placement",
+            "cohort-queries"
+          ],
+          "query": [
+            {
+              "key": "limit",
+              "value": ""
+            },
+            {
+              "key": "requester_role",
+              "value": "staff"
+            }
+          ],
+          "variable": []
+        },
+        "description": "Query metadata for every request that ranged over many students' records \u2014 who ran it, over which cohort, and how many rows it touched. Staff only; reading the trail never returns student records."
+      }
+    },
+    {
+      "name": "Deterministic per-criterion eligibility",
+      "request": {
+        "method": "GET",
+        "header": [
+          {
+            "key": "Content-Type",
+            "value": "application/json"
+          }
+        ],
+        "url": {
+          "raw": "{{baseUrl}}/placement/eligibility?student_id=S102&company=Zoho&role=SDE&role_id=",
+          "host": [
+            "{{baseUrl}}"
+          ],
+          "path": [
+            "placement",
+            "eligibility"
+          ],
+          "query": [
+            {
+              "key": "student_id",
+              "value": "S102"
+            },
+            {
+              "key": "company",
+              "value": "Zoho"
+            },
+            {
+              "key": "role",
+              "value": "SDE"
+            },
+            {
+              "key": "role_id",
+              "value": ""
+            }
+          ],
+          "variable": []
+        },
+        "description": ""
+      }
+    },
+    {
+      "name": "Downloadable PDF eligibility report (Phase 8, item 11)",
+      "request": {
+        "method": "GET",
+        "header": [
+          {
+            "key": "Content-Type",
+            "value": "application/json"
+          }
+        ],
+        "url": {
+          "raw": "{{baseUrl}}/placement/eligibility/:student_id/report.pdf?company=&role=&user_id=S102&requester_role=student",
+          "host": [
+            "{{baseUrl}}"
+          ],
+          "path": [
+            "placement",
+            "eligibility",
+            ":student_id",
+            "report.pdf"
+          ],
+          "query": [
+            {
+              "key": "company",
+              "value": ""
+            },
+            {
+              "key": "role",
+              "value": ""
+            },
+            {
+              "key": "user_id",
+              "value": "S102"
+            },
+            {
+              "key": "requester_role",
+              "value": "student"
+            }
+          ],
+          "variable": [
+            {
+              "key": "student_id",
+              "value": ""
+            }
+          ]
+        },
+        "description": "Self-contained PDF of the student's eligibility, missing criteria and learning path. Access follows the JSON endpoint: a student may only export their own report."
+      }
+    },
+    {
+      "name": "Rank eligible candidates for a role",
+      "request": {
+        "method": "POST",
+        "header": [
+          {
+            "key": "Content-Type",
+            "value": "application/json"
+          }
+        ],
+        "url": {
+          "raw": "{{baseUrl}}/placement/match",
+          "host": [
+            "{{baseUrl}}"
+          ],
+          "path": [
+            "placement",
+            "match"
+          ],
+          "query": [],
+          "variable": []
+        },
+        "description": "",
+        "body": {
+          "mode": "raw",
+          "raw": "{\n  \"company\": \"Zoho\",\n  \"role\": \"SDE\",\n  \"top_n\": 5\n}",
+          "options": {
+            "raw": {
+              "language": "json"
+            }
+          }
+        }
+      }
+    },
+    {
+      "name": "Missing skills and an ordered learning path",
+      "request": {
+        "method": "GET",
+        "header": [
+          {
+            "key": "Content-Type",
+            "value": "application/json"
+          }
+        ],
+        "url": {
+          "raw": "{{baseUrl}}/placement/skill-gap/:student_id?company=&role=",
+          "host": [
+            "{{baseUrl}}"
+          ],
+          "path": [
+            "placement",
+            "skill-gap",
+            ":student_id"
+          ],
+          "query": [
+            {
+              "key": "company",
+              "value": ""
+            },
+            {
+              "key": "role",
+              "value": ""
+            }
+          ],
+          "variable": [
+            {
+              "key": "student_id",
+              "value": ""
+            }
+          ]
+        },
+        "description": ""
+      }
+    },
+    {
+      "name": "Recompute eligibility with overrides, without persisting",
+      "request": {
+        "method": "POST",
+        "header": [
+          {
+            "key": "Content-Type",
+            "value": "application/json"
+          }
+        ],
+        "url": {
+          "raw": "{{baseUrl}}/placement/what-if",
+          "host": [
+            "{{baseUrl}}"
+          ],
+          "path": [
+            "placement",
+            "what-if"
+          ],
+          "query": [],
+          "variable": []
+        },
+        "description": "",
+        "body": {
+          "mode": "raw",
+          "raw": "{\n  \"student_id\": \"S102\",\n  \"cgpa\": 7.5,\n  \"skill_levels\": {\n    \"docker\": 3\n  }\n}",
+          "options": {
+            "raw": {
+              "language": "json"
+            }
+          }
+        }
+      }
+    },
+    {
+      "name": "Live RAM, CPU, bandwidth and simulated-cloud quota",
+      "request": {
+        "method": "GET",
+        "header": [
+          {
+            "key": "Content-Type",
+            "value": "application/json"
+          }
+        ],
+        "url": {
+          "raw": "{{baseUrl}}/resource-status",
+          "host": [
+            "{{baseUrl}}"
+          ],
+          "path": [
+            "resource-status"
+          ],
+          "query": [],
+          "variable": []
+        },
+        "description": ""
+      }
+    },
+    {
+      "name": "Choose the cheapest adequate path and optionally run it",
+      "request": {
+        "method": "POST",
+        "header": [
+          {
+            "key": "Content-Type",
+            "value": "application/json"
+          }
+        ],
+        "url": {
+          "raw": "{{baseUrl}}/route",
+          "host": [
+            "{{baseUrl}}"
+          ],
+          "path": [
+            "route"
+          ],
+          "query": [],
+          "variable": []
+        },
+        "description": "",
+        "body": {
+          "mode": "raw",
+          "raw": "{\n  \"query\": \"What is the fee refund policy?\",\n  \"complexity_hint\": \"low\"\n}",
+          "options": {
+            "raw": {
+              "language": "json"
+            }
+          }
+        }
+      }
+    },
+    {
+      "name": "Router decision log with reasoning",
+      "request": {
+        "method": "GET",
+        "header": [
+          {
+            "key": "Content-Type",
+            "value": "application/json"
+          }
+        ],
+        "url": {
+          "raw": "{{baseUrl}}/router/decisions?limit=&route=",
+          "host": [
+            "{{baseUrl}}"
+          ],
+          "path": [
+            "router",
+            "decisions"
+          ],
+          "query": [
+            {
+              "key": "limit",
+              "value": ""
+            },
+            {
+              "key": "route",
+              "value": ""
+            }
+          ],
+          "variable": []
+        },
+        "description": ""
+      }
+    },
+    {
+      "name": "Replay a resource scenario and observe routing changes",
+      "request": {
+        "method": "POST",
+        "header": [
+          {
+            "key": "Content-Type",
+            "value": "application/json"
+          }
+        ],
+        "url": {
+          "raw": "{{baseUrl}}/simulate",
+          "host": [
+            "{{baseUrl}}"
+          ],
+          "path": [
+            "simulate"
+          ],
+          "query": [],
+          "variable": []
+        },
+        "description": "",
+        "body": {
+          "mode": "raw",
+          "raw": "{\n  \"scenario\": \"ram_crash\",\n  \"steps\": 8,\n  \"query\": \"Explain the placement policy\"\n}",
+          "options": {
+            "raw": {
+              "language": "json"
+            }
+          }
+        }
+      }
+    }
+  ]
+}
