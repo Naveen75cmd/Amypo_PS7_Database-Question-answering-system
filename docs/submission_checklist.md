@@ -3,6 +3,13 @@
 Phase 10, submission item 10. Every row is evidence, not intent: the column on
 the right is the command or request that proves it, run on this machine.
 
+> **Final verification run (2026-10-14).** The command
+> `cd backend && python -m pytest tests -q` collects **206 tests** and passes all
+> of them — pytest exit 0, no failures, one `StarletteDeprecationWarning` — with
+> MySQL 8 healthy from `docker compose up -d mysql` and the seeded `amypo`
+> schema in place. That run was on commit `3f4a66c`; the `final` tag sits on the
+> docs-only commit that adds these lines, so no code changed afterwards.
+
 > Note: the repository does not contain the PS7 problem statement itself, so the
 > rows below are the "Hard constraints", "Required API contract" and Phase 1–10
 > deliverables transcribed from `PS7_PS1_Build_Prompts (1).md`. Tick these
@@ -38,10 +45,10 @@ the right is the command or request that proves it, run on this machine.
 | C3 | `openapi.yaml` complete + Postman collection | ✅ | 16 documented paths; `python scripts/make_artifacts.py --only postman` → `docs/postman_collection.json` (16 items derived from the spec) |
 | C4 | Architecture diagram (PNG + PDF) | ✅ | `docs/architecture.png` (1746×1167), `docs/architecture.pdf` — regenerate with `make artefacts` |
 | C5 | Model / technique card | ✅ | `docs/model_card.md` |
-| C6 | Evaluation report | ✅ | `make eval` → `docs/eval/report.html` + `report.json` (Phase 9) |
+| C6 | Evaluation report | ✅ | `make eval` → `docs/eval/report.html` + `report.json` (Phase 9). Both are generated artefacts and git-ignored (they embed a run id, timestamps and this machine's RAM), so a fresh clone regenerates them with `make eval`; the numbers quoted in section D are from the 2026-10-13 local run |
 | C7 | One-page final summary (PDF) | ✅ | `docs/final_summary.pdf`, built from the eval report by `make artefacts` |
 | C8 | Demo video script (3–5 min) with click path | ✅ | `docs/demo_script.md` |
-| C9 | Clean git history, conventional commits, tagged milestones | ✅ | Phase 8/9/10 committed in three conventional commits (`feat: complete the Phase 8 add-ons…`, `feat(eval): add the Phase 9 harness…`, `docs: add the Phase 10 submission pack…`); `git tag -n1` → `stage1`, `stage2-mvp`, `final`. History is local: the repo has no remote |
+| C9 | Clean git history, conventional commits, tagged milestones | ✅ | Phases 8–10 land in conventional commits (`feat: complete the Phase 8 add-ons…`, `feat(eval): add the Phase 9 harness…`, `docs: add the Phase 10 submission pack…`, `feat: abstain before generation…`, `test: check the eval CLI in-process…`); `git tag -n1` → `stage1`, `stage2-mvp`, `final` (annotated, on the 206-test-green commit `3f4a66c`). History is local: the repo has no remote |
 | C10 | Final checklist + "no external network call" proof | ✅ | This file, plus the guards in A1 |
 
 ## D. Judging criteria sanity check
