@@ -14,7 +14,11 @@ RUN apt-get update \
     && rm -rf /var/lib/apt/lists/*
 
 COPY backend/requirements.txt /app/backend/requirements.txt
-RUN pip install --no-cache-dir -r /app/backend/requirements.txt
+# --timeout/--retries are raised above pip's defaults (15 s, 5). The scientific
+# wheels here are large -- scipy alone is ~35 MB -- so on a slow link the default
+# socket timeout aborts the download with ReadTimeoutError and the image cannot
+# be built at all. These flags only change resilience, not what is installed.
+RUN pip install --no-cache-dir --timeout 120 --retries 10 -r /app/backend/requirements.txt
 
 COPY backend /app/backend
 COPY scripts /app/scripts
