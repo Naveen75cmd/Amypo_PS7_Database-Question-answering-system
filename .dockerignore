@@ -1,0 +1,30 @@
+# The backend service builds with the repository root as its context (see
+# docker-compose.yml) because backend/Dockerfile COPYs backend/, scripts/, db/
+# and openapi.yaml. Everything else in the root is dead weight that Docker would
+# otherwise tar up and send to the daemon on every build — most of it the
+# frontend's node_modules and .next. None of the exclusions below are needed by
+# any Dockerfile in this repository.
+
+# VCS and CI
+.git
+.github
+
+# Python caches and virtualenvs
+**/__pycache__/
+**/*.py[cod]
+.venv/
+venv/
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+
+# Node (the frontend image installs its own; see frontend/.dockerignore)
+**/node_modules/
+**/.next/
+**/out/
+
+# Generated artefacts and local noise
+docs/eval/report.json
+docs/eval/report.html
+*.log
+.DS_Store

@@ -1,0 +1,14 @@
+# The frontend image builds its own dependencies: the Dockerfile runs `npm ci`
+# for linux inside the `deps` stage, then does `COPY . .` in `builder`. Without
+# this file that COPY copies the host's node_modules straight over the top, which
+# on Windows means shipping @next/swc-win32-x64-msvc into a linux image and
+# clobbering the platform-correct packages npm ci just installed. The dev .next
+# output is several hundred MB of dead weight on top of that.
+node_modules
+.next
+out
+
+# Local env overrides and noise.
+.env*.local
+npm-debug.log*
+.DS_Store
