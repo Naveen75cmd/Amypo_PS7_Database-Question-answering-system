@@ -55,13 +55,23 @@ Additional endpoints are allowed but the above must not change shape. Extra fiel
 responses are OK only if documented in openapi.yaml.
 
 STACK
-Backend: Python 3.10, FastAPI, Pydantic v2, SQLite (structured data + cache + logs),
+Backend: Python 3.10, FastAPI, Pydantic v2, MySQL 8 (organizer-advised; structured data,
+chunk text + metadata, cache, logs) via SQLAlchemy + PyMySQL,
 psutil, scikit-learn (TF-IDF + logistic regression complexity classifier),
 rank_bm25, sentence-transformers (small embedding model, e.g. bge-small-en-v1.5 or
-all-MiniLM-L6-v2), FAISS-cpu (or sqlite-vec), Ollama serving a 4-bit quantized small
+all-MiniLM-L6-v2), FAISS-cpu (vectors only; MySQL holds chunk text and record_ids), Ollama serving a 4-bit quantized small
 model (Phi-3 mini 3.8B primary, TinyLlama 1.1B fallback).
 Frontend: Next.js 14 (App Router) + TypeScript + Tailwind CSS. No heavy UI kits.
-Deploy: Docker + docker-compose.
+Deploy: Docker + docker-compose (services: mysql, backend, frontend, ollama).
+
+DATA ROLES (strict)
+- MySQL = anything exact: grades, attendance, schedules, student skills/performance,
+  company criteria, query_log, cache_entries, router_decisions, resource_samples, eval_runs,
+  and the chunk text/metadata (record_id, updated_at, access_scope) behind every citation.
+- RAG (FAISS embeddings + BM25 over chunks) = free text: course content, FAQs, policies.
+- Placement matcher = Python rules engine reading MySQL. Not RAG.
+- Numbers and eligibility come from parameterised SQL templates, never from the LLM.
+- Keep MySQL memory small (~400-500 MB: tuned innodb_buffer_pool_size) inside the 8 GB budget.
 
 JUDGING (optimize for it)
 PS7: Answer accuracy/groundedness 45, retrieval precision@k 20, hallucination rate 20,
@@ -95,7 +105,8 @@ PHASE 1 — Foundation. No business logic yet.
              placement, grounding, cache, monitor, eval, db), /backend/tests
    /frontend (Next.js 14)
    /data/raw (sample inputs), /data/synthetic (generated), /data/eval (benchmark sets)
-   /docs, /scripts, docker-compose.yml, Makefile, .env.example, README.md
+   /docs, /scripts, /db (schema.sql, migrations, my.cnf), docker-compose.yml, Makefile,
+   .env.example, README.md
 
 2. Write the OpenAPI contract first (openapi.yaml) for the four required endpoints plus
    these extras: POST /api/v1/ingest, GET /api/v1/ask/trace/{request_id},
@@ -108,7 +119,11 @@ PHASE 1 — Foundation. No business logic yet.
    request_id propagation, CORS for the frontend, GET /api/v1/health returning component
    status (db, index, llm, router) and versions.
 
-4. SQLite schema + migrations (plain SQL files): students, courses, enrollments, grades,
+4. MySQL 8 schema + migrations (plain .sql files or Alembic; InnoDB, utf8mb4, proper foreign
+   keys and indexes on student_id, course_code, record_id, updated_at; chunk text in a TEXT
+   column, JSON columns for metadata/traces). Tune my.cnf for low memory
+   (innodb_buffer_pool_size ~256M, max_connections ~50). Use SQLAlchemy + PyMySQL with a
+   connection pool and a healthcheck. Tables: students, courses, enrollments, grades,
    attendance, schedules, skills, student_skills, companies, company_roles,
    role_requirements, documents, chunks, query_log, cache_entries, router_decisions,
    resource_samples, eval_runs.
@@ -118,7 +133,8 @@ PHASE 1 — Foundation. No business logic yet.
    -> {Cache | Local RAG | Offline Fallback | Simulated Cloud} -> Grounding Verifier
    -> Response + Trace -> Query Log/Metrics.
 
-Definition of Done: `docker compose up` brings up backend + frontend placeholders,
+Definition of Done: `docker compose up` brings up mysql (healthy, schema applied), backend
++ frontend placeholders,
 /api/v1/health returns 200, openapi.yaml validates, tests run green.
 ```
 
@@ -147,7 +163,7 @@ the pipeline schema-driven and swappable.
    hallucination/abstention) and 10 adversarial ones (prompt injection inside documents,
    conflicting policies).
 3. Ingestion pipeline (app/ingest): loaders for md, txt, pdf (pypdf), csv, docx; structured
-   loaders from CSV/SQLite; section-aware chunking (heading-aware, ~300–500 tokens, 15%
+   loaders from CSV and MySQL tables (SQLAlchemy); section-aware chunking (heading-aware, ~300–500 tokens, 15%
    overlap) preserving metadata: doc_id, title, section, page, record_id, updated_at,
    access_scope (public | student:<id> | staff).
    Stable record_id scheme: `doc:<doc_id>#<chunk_no>`, `db:<table>:<pk>`.
@@ -157,7 +173,7 @@ the pipeline schema-driven and swappable.
 5. Idempotent ingestion with content hashes; re-ingest only changed docs. POST /ingest and a
    CLI `python -m app.ingest --path data/raw`.
 
-Definition of Done: one command seeds DB + indexes docs; counts printed; re-running changes
+Definition of Done: one command seeds MySQL (named volume keeps data across restarts) + indexes docs; counts printed; re-running changes
 nothing; unit tests cover chunk boundaries and record_id stability.
 ```
 
@@ -169,7 +185,9 @@ nothing; unit tests cover chunk boundaries and record_id stability.
 PHASE 3 — Local retrieval. Target: high precision@k with a small memory footprint.
 
 1. Embeddings: load the small embedding model once, batch encode, persist vectors to a
-   FAISS index (or sqlite-vec). Keep model + index under ~600 MB RAM.
+   FAISS index. FAISS stores vectors only and maps each vector id to a MySQL `chunks.record_id`;
+   chunk text, metadata and access scope are always read from MySQL. Keep model + index
+   under ~600 MB RAM.
 2. BM25 index over chunks (rank_bm25) with sensible tokenization, including handling of
    IDs, course codes, and numbers (e.g. "CS301", "S102").
 3. Hybrid retrieval: dense top-30 + BM25 top-30 -> reciprocal rank fusion -> top-k.
@@ -465,7 +483,8 @@ Definition of Done: `make eval` produces /docs/eval/report.(html|pdf) reproducib
 ```
 PHASE 10 — Submission pack. Generate every required artefact.
 
-1. docker-compose.yml: services backend, frontend, ollama (with model pull on first run
+1. docker-compose.yml: services mysql (named volume, healthcheck, init scripts from /db),
+   backend (depends_on mysql healthy), frontend, ollama (with model pull on first run
    or pre-baked volume instructions for offline use). `docker compose up` is the only
    command needed. Add resource limits (mem_limit) to prove the 8 GB budget.
 2. README.md: prerequisites, one-command start, offline setup (how to pre-download models
@@ -473,7 +492,7 @@ PHASE 10 — Submission pack. Generate every required artefact.
 3. openapi.yaml: complete, validated, with examples for every endpoint; also export a
    Postman collection.
 4. Architecture diagram (PNG + PDF): UI, API, router, monitor, cache, retriever, LLM,
-   verifier, placement engine, SQLite/FAISS, simulator. Clean, labelled, brand colours.
+   verifier, placement engine, MySQL/FAISS, simulator. Clean, labelled, brand colours.
 5. Model / technique card (docs/model_card.md): approach, models used (name, size,
    quantization, licence), training/config data (classifier training set, thresholds),
    known limitations, resource footprint (RAM, disk, latency), failure modes, and how
