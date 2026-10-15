@@ -64,10 +64,15 @@ services:
     build:
       context: ./frontend
       dockerfile: Dockerfile
+      args:
+        # The frontend proxies /api/v1/* to this origin from its Next server, and
+        # rewrites() is evaluated at build time, so the value has to be a build
+        # arg. "backend" resolves on the compose network when the Next server
+        # makes the upstream call, which is why the service name is correct here
+        # even though it is not resolvable at build time.
+        NEXT_PUBLIC_API_URL: http://backend:8000
     ports:
       - "3000:3000"
-    environment:
-      NEXT_PUBLIC_API_URL: http://backend:8000
     mem_limit: 1g
     depends_on:
       - backend
