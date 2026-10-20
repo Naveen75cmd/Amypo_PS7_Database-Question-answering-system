@@ -14,6 +14,7 @@ from dataclasses import dataclass, field
 from datetime import datetime, timezone
 from pathlib import Path
 
+from ..auth.principal import visibility_for_path
 from ..core.settings import settings
 from ..db import execute, query, query_one
 from .chunking import Chunk, chunk_document, content_hash
@@ -98,11 +99,21 @@ def ingest_documents(root: Path, force: bool = False) -> tuple[int, int, int, li
             skipped += 1
             continue
 
+        # Visibility is a property of where the document lives: data/raw/staff
+        # and data/raw/admin are staff- and admin-only. Deriving it from the
+        # path means the tree shows the access decision, and a document cannot
+        # become public through a typo in its header.
+        try:
+            relative = path.resolve().relative_to(root.resolve())
+            visibility = visibility_for_path(relative.parts[:-1])
+        except ValueError:  # pragma: no cover - path outside the corpus root
+            visibility = "public"
+
         chunks = chunk_document(
             doc_id=loaded.doc_id,
             title=loaded.title,
             text=loaded.text,
-            access_scope="public",
+            access_scope=visibility,
             updated_at=_now(),
         )
         if not chunks:
@@ -114,17 +125,18 @@ def ingest_documents(root: Path, force: bool = False) -> tuple[int, int, int, li
             """
             INSERT INTO documents (doc_id, title, source_path, doc_type, content_hash,
                                    access_scope, version, updated_at, indexed_at)
-            VALUES (?, ?, ?, ?, ?, 'public', ?, ?, ?)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
             ON DUPLICATE KEY UPDATE
                 title = VALUES(title),
                 source_path = VALUES(source_path),
                 content_hash = VALUES(content_hash),
+                access_scope = VALUES(access_scope),
                 version = VALUES(version),
                 updated_at = VALUES(updated_at),
                 indexed_at = VALUES(indexed_at)
             """,
             (loaded.doc_id, loaded.title, loaded.source_path, loaded.doc_type,
-             text_hash, version, _now(), _now()),
+             text_hash, visibility, version, _now(), _now()),
         )
 
         _delete_document_chunks(loaded.doc_id)

@@ -133,7 +133,17 @@ def _routes(routes: dict[str, Any] | None) -> str:
 # --------------------------------------------------------------------------
 
 
-def _verifier_plot(sweep: dict[str, Any]) -> str:
+def _verifier_plot(
+    sweep: dict[str, Any],
+    key: str = "threshold",
+    label: str = "verifier threshold",
+) -> str:
+    """Accuracy against hallucination across a sweep's points.
+
+    ``key`` is the point's own name for the swept value: ``threshold`` for the
+    verifier and cache sweeps, ``floor`` for the relevance floor; ``label``
+    names it in the accessible description.
+    """
     points = sweep.get("points") or []
     if len(points) < 2:
         return '<p class="note">Not enough sweep points to plot.</p>'
@@ -161,13 +171,13 @@ def _verifier_plot(sweep: dict[str, Any]) -> str:
     dots = []
     for point in points:
         x, y = sx(float(point["hallucination_rate"])), sy(float(point["accuracy"]))
-        is_chosen = chosen is not None and abs(float(point["threshold"]) - chosen) < 1e-9
+        is_chosen = chosen is not None and abs(float(point[key]) - chosen) < 1e-9
         radius = 7 if is_chosen else 5
         color = "var(--bad)" if is_chosen else "var(--accent)"
         dots.append(
             f'<circle cx="{x:.1f}" cy="{y:.1f}" r="{radius}" fill="{color}"/>'
             f'<text x="{x + 9:.1f}" y="{y + 4:.1f}" class="dot-label">'
-            f"{point['threshold']:.2f}</text>"
+            f"{float(point[key]):.2f}</text>"
         )
     polyline = " ".join(
         f"{sx(float(p['hallucination_rate'])):.1f},{sy(float(p['accuracy'])):.1f}"
@@ -175,7 +185,7 @@ def _verifier_plot(sweep: dict[str, Any]) -> str:
     )
     return (
         f'<svg class="plot" viewBox="0 0 {width} {height}" '
-        'role="img" aria-label="Accuracy versus hallucination rate across verifier thresholds">'
+        f'role="img" aria-label="Accuracy versus hallucination rate across {_esc(label)} values">'
         f'<line x1="{left}" y1="{top + plot_h}" x2="{left + plot_w}" y2="{top + plot_h}" '
         'class="axis"/>'
         f'<line x1="{left}" y1="{top}" x2="{left}" y2="{top + plot_h}" class="axis"/>'
@@ -193,7 +203,7 @@ def _verifier_plot(sweep: dict[str, Any]) -> str:
         f'<polyline points="{polyline}" class="line" fill="none"/>'
         f'{"".join(dots)}'
         "</svg>"
-        '<p class="note">Each dot is a verifier threshold (labelled); the red dot '
+        f'<p class="note">Each dot is one {_esc(label)} (labelled); the red dot '
         "is the configured operating point. Down and right is worse.</p>"
     )
 
@@ -322,10 +332,106 @@ def _render_html(report: dict[str, Any]) -> str:
                     f"{headline.get('scenarios_passed', 0)}/{headline.get('scenarios_total', 0)}",
                     "resource suite",
                 ),
+                (
+                    "Access-control leaks",
+                    str(headline.get("access_control_leaks", 0)),
+                    f"{headline.get('access_control_cases', 0)} red-team cases",
+                ),
             ]
         )
         + "</section>"
     )
+
+    # ---- access control (Phase 9, item 5) ----------------------------------
+    access = report.get("access_control") or {}
+    if access:
+        role_rows = [
+            [
+                role,
+                bucket.get("cases", 0),
+                bucket.get("prompts", 0),
+                bucket.get("requests", 0),
+                bucket.get("prompts", 0) + bucket.get("requests", 0),
+                bucket.get("leaks", 0),
+            ]
+            for role, bucket in sorted((access.get("per_role") or {}).items())
+        ]
+        vector_rows = [
+            [vector, bucket.get("cases", 0), bucket.get("leaks", 0),
+             bucket.get("inconclusive", 0)]
+            for vector, bucket in sorted(
+                (access.get("by_vector") or {}).items()
+            )
+        ]
+        verdict = (
+            '<span class="badge good">pass</span>'
+            if access.get("passed")
+            else '<span class="badge bad">fail</span>'
+        )
+        part = [
+            "<section><h2>Access control (red team)</h2>",
+            '<p class="kv">' + verdict + " " + _esc(access.get("method", "")) +
+            "</p>",
+            _grid(
+                [
+                    ("Leaks", str(access.get("leaks", 0)), "must be 0"),
+                    ("Cases", str(access.get("cases", 0)), "prompts + requests"),
+                    (
+                        "Prompts answered",
+                        str(access.get("prompts_answered", 0)),
+                        "real answers inspected",
+                    ),
+                    (
+                        "Roles with 30+",
+                        f"{sum(1 for ok in (access.get('roles_meet_min') or {}).values() if ok)}/3",
+                        "plan Ph.9 item 5",
+                    ),
+                    (
+                        "Inconclusive",
+                        str(access.get("inconclusive_count", 0)),
+                        "neither leak nor proof",
+                    ),
+                    (
+                        "Skipped",
+                        str(access.get("skipped_count", 0)),
+                        "cases that could not run",
+                    ),
+                ]
+            ),
+            _table(
+                ["role", "cases", "prompts", "requests", "total", "leaks"],
+                role_rows or [["—", 0, 0, 0, 0, 0]],
+            ),
+            _table(
+                ["attack vector", "cases", "leaks", "inconclusive"],
+                vector_rows or [["—", 0, 0, 0]],
+            ),
+        ]
+        failures = access.get("failures") or []
+        if failures:
+            part.append(
+                _table(
+                    ["role", "case", "status", "why it leaked"],
+                    [
+                        [f.get("role"), f.get("case"), f.get("status"),
+                         f.get("detail")]
+                        for f in failures
+                    ],
+                )
+            )
+        skipped = access.get("skipped") or []
+        if skipped:
+            part.append(
+                _table(
+                    ["role", "case", "why it did not run"],
+                    [
+                        [f.get("role"), f.get("case"), f.get("detail")]
+                        for f in skipped
+                    ],
+                )
+            )
+        part.append("</section>")
+        sections.append("".join(part))
 
     # ---- answers ----------------------------------------------------------
     per_kind = answers.get("per_kind", {})
@@ -487,6 +593,7 @@ def _render_html(report: dict[str, Any]) -> str:
 
     # ---- sweeps -----------------------------------------------------------
     verifier_sweep = sweeps.get("verifier_threshold") or {}
+    relevance_sweep = sweeps.get("relevance_floor") or {}
     cache_sweep = sweeps.get("cache_cosine") or {}
     ram_sweep = sweeps.get("ram_floor") or {}
     sweep_parts = ["<section><h2>Threshold sweeps</h2>"]
@@ -504,6 +611,25 @@ def _render_html(report: dict[str, Any]) -> str:
                 ]
             )
             classes.append("chosen" if chosen else None)
+        # A flat sweep means the gate decides nothing in this configuration, and
+        # a plot of eight coincident dots would hide that instead of saying it.
+        flat = len(
+            {
+                (p.get("accuracy"), p.get("hallucination_rate"), p.get("answered"))
+                for p in verifier_sweep["points"]
+            }
+        ) == 1
+        flat_note = ""
+        if flat:
+            highest = max(float(p["threshold"]) for p in verifier_sweep["points"])
+            flat_note = (
+                '<p class="note"><strong>This sweep is flat by construction.</strong> '
+                "Every delivered answer in this run scored at or above the highest "
+                f"swept threshold ({highest:.2f}), so moving the confidence gate "
+                "changes no decision. Abstentions here are produced before "
+                "generation by the retrieval relevance floor below; the confidence "
+                "gate is what protects the model path.</p>"
+            )
         sweep_parts.append(
             '<p class="note">Verifier confidence threshold (offline re-derivation).</p>'
             + _table(
@@ -511,8 +637,43 @@ def _render_html(report: dict[str, Any]) -> str:
                 rows,
                 classes,
             )
-            + _verifier_plot(verifier_sweep)
+            + ("" if flat else _verifier_plot(verifier_sweep))
+            + flat_note
             + f'<p class="note">{_esc(verifier_sweep.get("note", ""))}</p>'
+        )
+    if relevance_sweep.get("points"):
+        rows, classes = [], []
+        for point in relevance_sweep["points"]:
+            chosen = abs(
+                float(point["floor"]) - float(relevance_sweep.get("chosen", -1))
+            ) < 1e-9
+            rows.append(
+                [
+                    f"{point['floor']:.1f}" + (" ← chosen" if chosen else ""),
+                    _num(point.get("accuracy")),
+                    f"{point.get('correct')}/{point.get('answered')}",
+                    _num(point.get("hallucination_rate")),
+                    _num(point.get("abstention_rate_unanswerable")),
+                ]
+            )
+            classes.append("chosen" if chosen else None)
+        sweep_parts.append(
+            '<p class="note" style="margin-top:16px">Retrieval relevance floor: the '
+            "best BM25 score retrieval must reach before passages are used at all. "
+            "Each point is a real answer pass at that floor.</p>"
+            + _table(
+                [
+                    "floor",
+                    "accuracy",
+                    "correct/answered",
+                    "hallucination rate",
+                    "abstention (unans.)",
+                ],
+                rows,
+                classes,
+            )
+            + _verifier_plot(relevance_sweep, key="floor", label="retrieval relevance floor")
+            + f'<p class="note">{_esc(relevance_sweep.get("note", ""))}</p>'
         )
     if cache_sweep.get("points"):
         rows, classes = [], []

@@ -11,7 +11,11 @@ WORKDIR /app
 # config's 127.0.0.1:8000 fallback (verified with `docker run -e ...`). It has to
 # be present here instead, so compose passes it via `build.args`.
 ARG NEXT_PUBLIC_API_URL
-ENV NEXT_PUBLIC_API_URL=${NEXT_PUBLIC_API_URL}
+# The "Demo accounts" panel on the login screen is also compiled in, so the same
+# rule applies: public build-time flag, not a runtime secret.
+ARG NEXT_PUBLIC_DEMO_MODE=true
+ENV NEXT_PUBLIC_API_URL=${NEXT_PUBLIC_API_URL} \
+    NEXT_PUBLIC_DEMO_MODE=${NEXT_PUBLIC_DEMO_MODE}
 COPY --from=deps /app/node_modules ./node_modules
 COPY . .
 RUN npm run build

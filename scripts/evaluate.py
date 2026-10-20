@@ -75,6 +75,12 @@ def main() -> int:
     parser.add_argument(
         "--no-report", action="store_true", help="print metrics without writing files"
     )
+    parser.add_argument(
+        "--no-access-control",
+        action="store_true",
+        help="skip the Phase 9 access-control red-team suite (its leak count "
+             "otherwise appears in the report)",
+    )
     args = parser.parse_args()
 
     _guard_outbound_sockets()
@@ -86,6 +92,7 @@ def main() -> int:
         include_scenarios=True,
         include_sweeps=True,
         include_load_test=not args.no_load_test,
+        include_access_control=not args.no_access_control,
         write_report=not args.no_report,
     )
     started = time.perf_counter()
@@ -131,6 +138,18 @@ def main() -> int:
         )
     else:
         print(f"load: {load.get('reason', 'skipped')}")
+    access = report.get("access_control") or {}
+    if access.get("ran"):
+        print(
+            f"access control: {access['leaks']} leaks / {access['cases']} cases "
+            f"({access['prompts']} prompts, {access['requests']} requests; "
+            f"{access['prompts_answered']} answered, "
+            f"{access['inconclusive_count']} inconclusive, "
+            f"{access['skipped_count']} not run) "
+            f"- {'pass' if access['passed'] else 'FAIL'}"
+        )
+    else:
+        print(f"access control: {access.get('reason', 'skipped')}")
     failures = report["failure_analysis"]
     print(f"failures analysed: {len(failures)}")
     if report.get("report_html"):

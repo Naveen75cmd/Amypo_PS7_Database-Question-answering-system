@@ -60,27 +60,49 @@ function LiveTiles() {
     );
   }
   const ollamaOk = data.ollama_status === "ok" || data.ollama_loaded;
+  // A server that answers but lacks the model is not "down": the card says so
+  // and names the one command that fixes it, instead of a bare "unavailable".
+  const modelMissing = data.ollama_status === "model_missing";
   return (
-    <div className="grid grid-cols-2 gap-3 md:grid-cols-5">
-      <Tile label="RAM available" value={`${data.ram_available_mb} MB`} />
-      <Tile label="CPU load" value={`${data.cpu_load_pct.toFixed(1)}%`} />
-      <Tile
-        label="Bandwidth"
-        value={`${data.bandwidth_kbps} kbps`}
-        detail={data.bandwidth_scenario !== "stable" ? `scenario: ${data.bandwidth_scenario}` : undefined}
-        tone={data.bandwidth_scenario !== "stable" ? "warn" : undefined}
-      />
-      <Tile label="Cloud-sim quota left" value={String(data.api_quota_remaining)} />
-      <Tile
-        label="Ollama"
-        value={ollamaOk ? "loaded" : "unavailable"}
-        detail={
-          data.ollama_last_latency_ms != null
-            ? `last reply ${data.ollama_last_latency_ms.toFixed(0)} ms`
-            : undefined
-        }
-        tone={ollamaOk ? undefined : "warn"}
-      />
+    <div className="space-y-2">
+      <div className="grid grid-cols-2 gap-3 md:grid-cols-5">
+        <Tile label="RAM available" value={`${data.ram_available_mb} MB`} />
+        <Tile label="CPU load" value={`${data.cpu_load_pct.toFixed(1)}%`} />
+        <Tile
+          label="Bandwidth"
+          value={`${data.bandwidth_kbps} kbps`}
+          detail={
+            data.bandwidth_scenario !== "stable"
+              ? `scenario: ${data.bandwidth_scenario}`
+              : undefined
+          }
+          tone={data.bandwidth_scenario !== "stable" ? "warn" : undefined}
+        />
+        <Tile label="Cloud-sim quota left" value={String(data.api_quota_remaining)} />
+        <Tile
+          label="Ollama"
+          value={ollamaOk ? "loaded" : modelMissing ? "model not pulled" : "unavailable"}
+          detail={
+            ollamaOk && data.ollama_last_latency_ms != null
+              ? `last reply ${data.ollama_last_latency_ms.toFixed(0)} ms`
+              : undefined
+          }
+          tone={ollamaOk ? undefined : "warn"}
+        />
+      </div>
+      {!ollamaOk && (
+        <p className="text-xs text-muted-foreground">
+          {/* The model has to live in the Ollama the backend talks to; a pull
+              into the Windows/macOS Ollama app does not fill the container. */}
+          {modelMissing
+            ? "The model must be in the Ollama server the backend uses — pull it into the container with "
+            : "The backend cannot reach Ollama at the configured address. Start it with "}
+          <code className="rounded bg-muted px-1 py-0.5 font-mono text-[11px]">
+            {modelMissing ? "docker compose run --rm ollama-pull" : "docker compose up -d ollama"}
+          </code>
+          {" — answers fall back to quoted evidence until then."}
+        </p>
+      )}
     </div>
   );
 }

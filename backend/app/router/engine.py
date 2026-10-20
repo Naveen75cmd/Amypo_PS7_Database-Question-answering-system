@@ -167,6 +167,7 @@ class RouterEngine:
         user_id: str | None = None,
         role: str = "student",
         complexity_hint: Complexity | None = None,
+        principal=None,
     ) -> RoutingDecision:
         understanding = understand_query(query, user_id=user_id, role=role)
         structured = is_structured_intent(understanding.intent)
@@ -183,7 +184,7 @@ class RouterEngine:
         bandwidth_ok = bandwidth >= settings.bandwidth_min_kbps and bandwidth > 0
         quota_ok = quota > reserve
 
-        scope = cache_scope(user_id, role)
+        scope = principal.cache_scope if principal is not None else cache_scope(user_id, role)
         cache_hit = self.cache.lookup(query, scope) if self.cache is not None else None
 
         local_latency = self.predict_latency(Route.local_model)
@@ -315,8 +316,17 @@ disagreeing with its own ideal for being *cheaper*. Both halves now encode
         role: str = "student",
         complexity_hint: Complexity | None = None,
         execute_answer: bool = True,
+        principal=None,
     ) -> RouteExecution:
-        decision = self.decide(query, user_id=user_id, role=role, complexity_hint=complexity_hint)
+        if principal is not None:
+            # The token is authoritative: it decides the role, the student scope
+            # and (through that) the cache key the answer may be reused from.
+            role = principal.role or role
+            user_id = principal.student_id or (user_id if principal.is_staff else None)
+        decision = self.decide(
+            query, user_id=user_id, role=role, complexity_hint=complexity_hint,
+            principal=principal,
+        )
         started = time.perf_counter()
 
         from ..api.ask_service import AskPipeline
@@ -345,25 +355,25 @@ disagreeing with its own ideal for being *cheaper*. Both halves now encode
                 route = Route.offline_fallback
                 degraded = True
                 result = pipeline.answer(
-                    query, user_id=user_id, role=role, request_id=request_id,
+                    query, user_id=user_id, role=role, request_id=request_id, principal=principal,
                     force_extractive=True,
                 )
             else:
                 # No real network exists, so the answer is still produced locally;
                 # the cloud call only books quota, latency and cost.
                 result = pipeline.answer(
-                    query, user_id=user_id, role=role, request_id=request_id
+                    query, user_id=user_id, role=role, request_id=request_id, principal=principal
                 )
                 if call is not None:
                     cost = call.cost_inr
         elif route == Route.offline_fallback:
             degraded = True
             result = pipeline.answer(
-                query, user_id=user_id, role=role, request_id=request_id,
+                query, user_id=user_id, role=role, request_id=request_id, principal=principal,
                 force_extractive=True,
             )
         else:
-            result = pipeline.answer(query, user_id=user_id, role=role, request_id=request_id)
+            result = pipeline.answer(query, user_id=user_id, role=role, request_id=request_id, principal=principal)
 
         if result is not None:
             answer = result.answer

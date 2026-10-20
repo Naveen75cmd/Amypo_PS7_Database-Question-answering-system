@@ -8,11 +8,8 @@ from __future__ import annotations
 
 
 def test_history_returns_asked_questions_for_staff(client, temp_db) -> None:
-    client.post("/api/v1/ask", json={"question": "What is the attendance policy?", "role": "staff"})
-    resp = client.get(
-        "/api/v1/ask/history",
-        params={"limit": 10, "requester_role": "staff"},
-    )
+    client.post("/api/v1/ask", json={"question": "What is the attendance policy?"})
+    resp = client.get("/api/v1/ask/history", params={"limit": 10})
     assert resp.status_code == 200, resp.text
     rows = resp.json()
     assert rows, "an answered question must appear in the history"
@@ -20,31 +17,22 @@ def test_history_returns_asked_questions_for_staff(client, temp_db) -> None:
     assert rows[0]["request_id"]
 
 
-def test_history_is_scoped_for_students(client, temp_db) -> None:
-    client.post(
-        "/api/v1/ask",
-        json={"question": "What is my CGPA?", "user_id": "S102", "role": "student"},
-    )
-    client.post(
-        "/api/v1/ask",
-        json={"question": "Who is eligible for Zoho SDE?", "user_id": "S103", "role": "student"},
-    )
-    resp = client.get(
-        "/api/v1/ask/history",
-        params={"limit": 20, "requester_role": "student", "user_id": "S102"},
-    )
+def test_history_is_scoped_for_students(api_client, temp_db) -> None:
+    s102 = api_client("student", student_id="S102")
+    s103 = api_client("student", student_id="S103")
+    s102.post("/api/v1/ask", json={"question": "What is my CGPA?"})
+    s103.post("/api/v1/ask", json={"question": "Who is eligible for Zoho SDE?"})
+    resp = s102.get("/api/v1/ask/history", params={"limit": 20})
     assert resp.status_code == 200, resp.text
     users = {row["user_id"] for row in resp.json()}
     assert users <= {"S102"}, "a student must see only their own queries"
+    assert users, "the student's own question must still be there"
 
 
 def test_history_limit_is_respected(client, temp_db) -> None:
     for i in range(3):
-        client.post("/api/v1/ask", json={"question": f"Question {i}?", "role": "staff"})
-    resp = client.get(
-        "/api/v1/ask/history",
-        params={"limit": 2, "requester_role": "staff"},
-    )
+        client.post("/api/v1/ask", json={"question": f"Question {i}?"})
+    resp = client.get("/api/v1/ask/history", params={"limit": 2})
     assert resp.status_code == 200
     assert len(resp.json()) <= 2
 

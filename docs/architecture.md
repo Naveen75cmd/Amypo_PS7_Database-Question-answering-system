@@ -66,10 +66,39 @@ the model.
 
 ## Access control
 
-Access scope is enforced in the retriever, not in the prompt. A student may only
-retrieve `student:<own_id>` records plus `public` documents; staff retrieve
-everything. The semantic cache key includes the access scope, so a cached staff
-answer is never served to a student.
+Every request becomes a `Principal` before it reaches a route: `Authorization:
+Bearer <jwt>` (CLI, harness) or the httpOnly session cookie (browser), verified
+in `app/auth/deps.py`. The role and the student id live *inside* the signed
+token, so a request body cannot widen its own scope — the legacy `role` and
+`requester_role` fields are accepted and ignored.
+
+```mermaid
+flowchart LR
+  R[Request] --> T{Token valid?}
+  T -- no --> E[401]
+  T -- yes --> P[Principal<br/>role, student_id, departments]
+  P --> D{Route dependency<br/>require(roles)}
+  D -- denied --> A[(audit_log)] --> F[403]
+  D -- allowed --> S[Retrieval policy<br/>visibility + student ids]
+  S --> SQL[SQL templates<br/>scoped by the same principal]
+  S --> C[(cache key<br/>role-scoped)]
+```
+
+Three enforcement points, none of them the prompt:
+
+1. **Route dependencies** — `deps.require("admin")` and friends. A refusal is
+   written to `audit_log` before the 403 is raised.
+2. **Retriever** — `AccessFilter.policy_for(principal)` filters chunks *before*
+   ranking. Documents carry `public`, `staff`, `admin` or `student:<id>`; a
+   student's policy admits public documents plus their own records only, and
+   staff policies never admit `admin`.
+3. **SQL and placement** — the student id is taken from the token and the
+   department from the staff assignment, so a student cannot ask for another
+   student's row and a staff member cannot query outside their departments.
+
+The semantic cache key is `Principal.cache_scope` (`admin`, `staff`,
+`student:<id>`), so a cached staff answer — which may cite a staff-only
+document — is never served to a student.
 
 ## Storage (MySQL / FAISS)
 
@@ -169,8 +198,11 @@ number the report needs from that one pass:
   re-run with `verifier_threshold = 0` (gate off) so the delta is exactly what
   the grounding gate buys;
 * **sweeps**: verifier confidence is re-derived offline from the gate-off pass
-  (`abstained = confidence < t`), cache cosine from nearest-other-question
-  similarity, RAM floor from logged resource samples plus live `decide()` calls;
+  (`abstained = confidence < t`), the retrieval relevance floor is measured with
+  one real answer pass per floor (the gate abstains before generation, so a
+  withheld answer cannot be recovered from a single pass), cache cosine from
+  nearest-other-question similarity, RAM floor from logged resource samples plus
+  live `decide()` calls;
 * **scenarios**: the six named failure modes (RAM crash, Ollama down, quota,
   offline, bandwidth) asserted against expected routing behaviour;
 * **load test**: 20 concurrent users through `decide` + `answer` against the

@@ -429,34 +429,32 @@ def test_what_if_does_not_persist(engine) -> None:
 # --------------------------------------------------------------------------
 
 
-def test_student_cannot_view_another_students_eligibility(client, temp_db) -> None:
+def test_student_cannot_view_another_students_eligibility(api_client, temp_db) -> None:
     _seed()
     _student("T001")
     _student("T002")
-    resp = client.get(
-        "/api/v1/placement/eligibility",
-        params={"student_id": "T002", "user_id": "T001", "requester_role": "student"},
+    # A student session: the student id comes from the token, so asking for
+    # T002 is refused rather than silently rewritten to T001.
+    student = api_client("student", student_id="T001")
+    resp = student.get(
+        "/api/v1/placement/eligibility", params={"student_id": "T002"}
     )
     assert resp.status_code == 403
 
 
-def test_student_can_view_own_eligibility(client, temp_db) -> None:
+def test_student_can_view_own_eligibility(api_client, temp_db) -> None:
     _seed()
     _student("T001")
-    resp = client.get(
-        "/api/v1/placement/eligibility",
-        params={"student_id": "T001", "user_id": "T001", "requester_role": "student"},
-    )
+    student = api_client("student", student_id="T001")
+    resp = student.get("/api/v1/placement/eligibility", params={"student_id": "T001"})
     assert resp.status_code == 200, resp.text
     assert resp.json()["results"][0]["student_id"] == "T001"
 
 
-def test_cohort_endpoint_denied_for_students(client, temp_db) -> None:
+def test_cohort_endpoint_denied_for_students(api_client, temp_db) -> None:
     _seed()
-    resp = client.get(
-        "/api/v1/placement/eligibility",
-        params={"company": "TestCo", "user_id": "T001", "requester_role": "student"},
-    )
+    student = api_client("student", student_id="T001")
+    resp = student.get("/api/v1/placement/eligibility", params={"company": "TestCo"})
     assert resp.status_code == 403
 
 
@@ -466,8 +464,7 @@ def test_cohort_query_is_audited(client, temp_db) -> None:
     _seed()
     _student("T001")
     resp = client.get(
-        "/api/v1/placement/eligibility",
-        params={"company": "TestCo", "requester_role": "staff"},
+        "/api/v1/placement/eligibility", params={"company": "TestCo"}
     )
     assert resp.status_code == 200, resp.text
     rows = query("SELECT kind, company, result_count FROM cohort_queries ORDER BY id DESC")
@@ -495,14 +492,15 @@ def test_ask_cohort_match_is_audited(client, temp_db) -> None:
     assert rows[0]["kind"] == "ask_match"
 
 
-def test_ask_student_cohort_falls_back_without_other_names(client, temp_db) -> None:
+def test_ask_student_cohort_falls_back_without_other_names(api_client, temp_db) -> None:
     _seed()
     _student("T001")
     _student("T002")
-    resp = client.post(
-        "/api/v1/ask",
-        json={"question": "Who is eligible for TestCo Engineer?", "user_id": "T002",
-              "role": "student"},
+    # A student session: the cohort answer is a staff capability, so the
+    # pipeline must fall back without naming another student.
+    student = api_client("student", student_id="T002")
+    resp = student.post(
+        "/api/v1/ask", json={"question": "Who is eligible for TestCo Engineer?"}
     )
     assert resp.status_code == 200, resp.text
     body = resp.json()

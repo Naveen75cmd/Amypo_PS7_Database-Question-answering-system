@@ -171,9 +171,146 @@ def temp_db(monkeypatch: pytest.MonkeyPatch):
     db_pkg.reset()
 
 
+@pytest.fixture(scope="session", autouse=True)
+def fixed_jwt_secret():
+    """Pin the signing key so a minted token verifies in the same process.
+
+    Without this an unset ``AMYPO_JWT_SECRET`` makes the app generate a random
+    per-process key, which is correct for production and awkward for a test that
+    mints its own token.
+    """
+    from app.auth import security
+    from app.core.settings import settings
+
+    previous = settings.jwt_secret
+    # >= 32 bytes: PyJWT warns below that for HS256.
+    settings.jwt_secret = "test-signing-key-for-the-suite-not-a-real-secret"
+    security.reset_secret_cache()
+    yield
+    settings.jwt_secret = previous
+    security.reset_secret_cache()
+
+
+def auth_headers(
+    role: str,
+    *,
+    student_id: str | None = None,
+    user_id: str | None = None,
+    departments: tuple[str, ...] = (),
+) -> dict[str, str]:
+    """A real bearer token for a synthetic principal.
+
+    The token is minted by the production code path, so the test exercises the
+    same signature/claim validation as a logged-in browser session.
+    """
+    from app.auth.security import create_access_token
+
+    token, _ = create_access_token(
+        user_id=user_id or f"test-{role}",
+        username=f"test.{role}",
+        role=role,
+        student_id=student_id,
+        departments=list(departments) or None,
+    )
+    return {"Authorization": f"Bearer {token}"}
+
+
+def ensure_test_user(role: str, *, student_id: str | None = None) -> dict:
+    """A real users row for a role, so /auth/me has something to read.
+
+    The token is minted from this row's primary key, exactly as ``/auth/login``
+    does, which keeps the test on the production claim path. Accounts are named
+    ``test.<role>[.<student>]`` so they cannot collide with the demo accounts.
+    """
+    import uuid
+
+    from app.auth.service import find_user
+    from app.db import execute, query_one
+
+    username = f"test.{role}" + (f".{student_id.lower()}" if student_id else "")
+    row = find_user(username)
+    if row is not None:
+        return row
+
+    user_id = uuid.uuid4().hex
+    execute(
+        """
+        INSERT INTO users
+            (id, username, email, password_hash, role, student_id, department,
+             cohort, is_active, created_at, last_login)
+        VALUES (?, ?, ?, ?, ?, ?, NULL, NULL, 1, '2026-01-01T00:00:00Z', NULL)
+        """,
+        (
+            user_id,
+            username,
+            f"{username}@amypo.local",
+            # Never used: the test mints its own token rather than logging in.
+            "x",
+            role,
+            student_id,
+        ),
+    )
+    return query_one("SELECT * FROM users WHERE id = ?", (user_id,)) or {"id": user_id}
+
+
 @pytest.fixture()
-def client(temp_db):
-    """FastAPI test client backed by the throwaway database."""
+def api_client(temp_db):
+    """Factory for authenticated test clients backed by the throwaway database.
+
+    The default client is an admin because most of the suite is about the
+    pipeline rather than about permissions, and admin is the one role that can
+    see everything. Tests about a specific role ask for that role explicitly --
+    which is the point of the retrofit: scope is a property of the session, so a
+    test that wants a student's view has to present a student's token.
+    """
+    from fastapi.testclient import TestClient
+
+    from app.main import create_app
+
+    opened = []
+
+    def make(
+        role: str = "admin",
+        *,
+        student_id: str | None = None,
+        user_id: str | None = None,
+        departments: tuple[str, ...] = (),
+    ):
+        row = ensure_test_user(role, student_id=student_id)
+        c = TestClient(
+            create_app(),
+            headers=auth_headers(
+                role,
+                student_id=student_id,
+                user_id=user_id or row["id"],
+                departments=departments,
+            ),
+        )
+        c.__enter__()
+        opened.append(c)
+        return c
+
+    yield make
+
+    for c in opened:
+        c.__exit__(None, None, None)
+
+
+@pytest.fixture()
+def client(api_client):
+    """Authenticated as an admin: the widest-scope session."""
+    return api_client("admin")
+
+
+@pytest.fixture()
+def student_client(api_client):
+    """Authenticated as student S102, the demo student the UI signs in as."""
+    return api_client("student", student_id="S102")
+
+
+@pytest.fixture()
+def anonymous_client(temp_db):
+    """No credentials at all -- useful for asserting the 401 boundary."""
     from fastapi.testclient import TestClient
 
     from app.main import create_app

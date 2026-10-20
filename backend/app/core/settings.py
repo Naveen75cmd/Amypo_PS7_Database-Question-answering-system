@@ -136,6 +136,11 @@ class Settings(BaseSettings):
     stub_llm: bool = False  # force the deterministic stub even if Ollama is up
 
     # --- grounding ------------------------------------------------------
+    # How often a degraded LLM client may re-probe Ollama. The first probe runs
+    # during startup, which races the model server; without a retry the backend
+    # would answer from the extractive stub until it was restarted.
+    llm_reprobe_interval_s: float = 30.0
+
     verifier_threshold: float = 0.55
     # Lexical coverage a claim must reach against its evidence. Earlier this sat
     # at 0.35 because citation markers ("[S1] [S2]") were counted as content and
@@ -217,6 +222,45 @@ class Settings(BaseSettings):
     # --- access control -------------------------------------------------
     staff_roles: tuple[str, ...] = ("staff", "admin")
     log_pii: bool = False
+
+    # --- authentication (local only, no external IdP) --------------------
+    # Signing key for the short-lived access token. An empty value means
+    # "generate one at startup": every login then survives only as long as the
+    # process, which is the safe default but logs everyone out on restart. Set
+    # AMYPO_JWT_SECRET in .env to keep sessions across restarts. Nothing is
+    # baked into the repository.
+    jwt_secret: str = ""
+    jwt_algorithm: str = "HS256"
+    access_token_ttl_s: int = 15 * 60
+    refresh_token_ttl_s: int = 12 * 60 * 60
+    # httpOnly, SameSite=Lax cookie for the web app. ``secure`` stays False on
+    # plain-http localhost (a Secure cookie is dropped there); turn it on behind
+    # TLS with AMYPO_AUTH_COOKIE_SECURE=true.
+    auth_cookie_name: str = "amypo_session"
+    auth_refresh_cookie_name: str = "amypo_refresh"
+    auth_cookie_secure: bool = False
+    auth_cookie_samesite: str = "lax"
+    # bcrypt work factor. 11 is ~80 ms per hash on this box: slow enough to make
+    # offline guessing expensive, fast enough for a demo-machine login.
+    bcrypt_rounds: int = 11
+    # Throttling: at most ``login_max_attempts`` failures per username+IP inside
+    # ``login_window_s``. Counted from the login_attempts table, so it survives a
+    # restart rather than living in process memory.
+    login_max_attempts: int = 8
+    login_window_s: int = 15 * 60
+    # An endpoint with no credentials is rejected unless this is turned off.
+    # Kept as a switch because the CLI harness and the eval scripts call the
+    # pipeline in-process, and because a judge may want to demo /ask with no
+    # login. The seeded accounts are the supported path either way.
+    auth_required: bool = True
+    # Demo accounts. ``demo_mode`` seeds them on startup and enables the
+    # collapsed "use a demo account" panel on the login page.
+    demo_mode: bool = True
+    demo_password: str = "amypo-demo-2026"
+    # Read-only, public-scope machine account for the organisers' evaluation
+    # harness. Empty means "find the seeded ``harness`` user and log in with
+    # the demo password instead"; set AMYPO_SERVICE_API_KEY to hand out a key.
+    service_api_key: str = ""
 
     # --- query understanding --------------------------------------------
     # TTL for the course/student/company vocab that entity matching checks

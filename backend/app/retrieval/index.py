@@ -90,27 +90,86 @@ class Retrieved:
         }
 
 
+@dataclass(frozen=True)
+class AccessPolicy:
+    """What one caller may retrieve, derived from their verified principal.
+
+    Two independent dimensions, because they answer different questions:
+
+    * ``visibility`` -- which *documents* are readable (public / staff / admin).
+    * ``students`` -- which *student records* are readable, or ``None`` for all.
+
+    Keeping them separate is what makes "a student must never receive a cached
+    answer built from staff-only documents" a property of the filter rather than
+    a hope about the prompt.
+    """
+
+    #: ``None`` means every visibility level, including ``admin``.
+    visibility: frozenset[str] | None
+    #: ``None`` means every ``student:<id>`` record.
+    students: frozenset[str] | None
+
+    def permits(self, access_scope: str) -> bool:
+        scope = (access_scope or "public").strip()
+        if scope.startswith("student:"):
+            if self.students is None:
+                return True
+            student_id = scope.split(":", 1)[1]
+            return student_id in self.students
+        if self.visibility is None:
+            return True
+        return scope in self.visibility
+
+
 class AccessFilter:
     """Retrieval-time access control. Never enforced by the prompt."""
 
     @staticmethod
     def allowed_scopes(user_id: str | None, role: str) -> set[str] | None:
-        """Return the scopes this caller may read, or None for everything."""
+        """Legacy scope set for non-web callers (the eval harness, scripts).
+
+        ``student:*`` is a wildcard understood by :meth:`permits`, so a staff
+        caller does not have to materialise 300 scope strings. Web requests go
+        through :meth:`policy_for` instead, which carries the department
+        restriction the token was given.
+        """
+        if role == "admin":
+            return None
         if role in settings.staff_roles:
-            return None  # staff: unrestricted
+            return {"public", "staff", "student:*"}
+        if role == "eval":
+            return {"public"}
         if not user_id:
             return {"public"}
         return {"public", f"student:{user_id}"}
 
     @staticmethod
-    def permits(access_scope: str, allowed: set[str] | None) -> bool:
+    def policy_for(principal) -> AccessPolicy:
+        """The policy implied by a verified principal."""
+        from ..auth.principal import allowed_student_ids, allowed_visibility
+
+        return AccessPolicy(
+            visibility=allowed_visibility(principal),
+            students=allowed_student_ids(principal),
+        )
+
+    @staticmethod
+    def permits(access_scope: str, allowed) -> bool:
+        """True when ``access_scope`` is readable under ``allowed``.
+
+        ``allowed`` is either ``None`` (everything), an :class:`AccessPolicy`, or
+        a legacy scope set.
+        """
         if allowed is None:
             return True
+        if isinstance(allowed, AccessPolicy):
+            return allowed.permits(access_scope)
         if access_scope == "public":
             return True
         if access_scope in allowed:
             return True
-        # A student may read staff-visible rows only if they are also their own.
+        if access_scope.startswith("student:") and "student:*" in allowed:
+            return True
         return False
 
 
@@ -257,7 +316,7 @@ class RetrievalIndex:
     # --- search ---------------------------------------------------------
 
     def dense_search(
-        self, query_text: str, top_k: int, allowed: set[str] | None
+        self, query_text: str, top_k: int, allowed: set[str] | AccessPolicy | None
     ) -> list[tuple[int, float]]:
         if self.vectors.size == 0:
             return []
@@ -288,7 +347,7 @@ class RetrievalIndex:
         return out
 
     def bm25_search(
-        self, query_text: str, top_k: int, allowed: set[str] | None
+        self, query_text: str, top_k: int, allowed: set[str] | AccessPolicy | None
     ) -> list[tuple[int, float]]:
         if self._bm25 is None or not self.chunks:
             return []
@@ -513,10 +572,16 @@ class RetrievalIndex:
         reranker: RerankerKind | None = None,
         dense_k: int | None = None,
         bm25_k: int | None = None,
+        policy: AccessPolicy | None = None,
     ) -> list[Retrieved]:
-        """Retrieve passages, honouring the caller's access scope."""
+        """Retrieve passages, honouring the caller's access scope.
+
+        ``policy`` is the token-derived answer to "what may this caller read?".
+        When it is absent (scripts, unit tests) the legacy ``user_id``/``role``
+        pair is used instead.
+        """
         top_k = top_k or settings.final_top_k
-        allowed = AccessFilter.allowed_scopes(user_id, role)
+        allowed = policy if policy is not None else AccessFilter.allowed_scopes(user_id, role)
 
         if mode == "dense":
             ranked = self.dense_search(query_text, top_k, allowed)

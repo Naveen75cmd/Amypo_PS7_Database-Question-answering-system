@@ -4,21 +4,44 @@ from __future__ import annotations
 
 from pathlib import Path
 
-from fastapi import APIRouter, HTTPException
+from fastapi import APIRouter, Depends, HTTPException, Request
 
+from ...auth import deps
+from ...auth.principal import ROLE_ADMIN, ROLE_STAFF, Principal
+from ...auth.service import record_audit
 from ...core.schemas import IngestRequest, IngestResponse
 from ...core.settings import settings
 from ...ingest.pipeline import ingest_all
 
 router = APIRouter(tags=["ingest"])
 
+_require_staff = deps.require(ROLE_STAFF, ROLE_ADMIN, action="ingest")
+
+
+def _client_ip(request: Request) -> str:
+    return request.client.host if request.client else "unknown"
+
 
 @router.post("/ingest", response_model=IngestResponse, summary="Ingest documents and structured rows")
-def ingest(payload: IngestRequest) -> IngestResponse:
+def ingest(
+    payload: IngestRequest,
+    request: Request,
+    principal: Principal = Depends(_require_staff),
+) -> IngestResponse:
+    """Re-index the corpus. Staff may upload, admin may also force a rebuild.
+
+    Every ingest is audited: it changes what every role can retrieve, so it is
+    one of the actions that must be attributable.
+    """
     target = Path(payload.path) if payload.path else settings.raw_dir
     if not target.exists():
         raise HTTPException(status_code=400, detail=f"path does not exist: {target}")
 
+    record_audit(
+        actor=principal, action="ingest.start", allowed=True, target=str(target),
+        scope=principal.cache_scope, ip=_client_ip(request),
+        detail=f"force={payload.force}",
+    )
     result = ingest_all(path=target, force=payload.force)
 
     # Refresh the retrieval index in place when one is already loaded.
@@ -47,8 +70,14 @@ def ingest(payload: IngestRequest) -> IngestResponse:
     response_model=list[dict],
     summary="Ingested documents with chunk counts",
 )
-def documents() -> list[dict]:
-    """The knowledge base as it is indexed right now (read-only)."""
+def documents(
+    principal: Principal = Depends(_require_staff),
+) -> list[dict]:
+    """The knowledge base as it is indexed right now (read-only).
+
+    Staff and admin only: the list includes the visibility level of every
+    document, which would tell a student which staff-only titles exist.
+    """
     from ...db import query
 
     rows = query(

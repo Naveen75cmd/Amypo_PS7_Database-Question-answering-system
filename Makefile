@@ -5,7 +5,7 @@ PY ?= python
 BACKEND = cd backend &&
 FRONTEND = cd frontend &&
 
-.PHONY: install install-frontend db db-down seed ingest index api web dev test test-backend eval artefacts clean
+.PHONY: install install-frontend db db-down models seed ingest index api web dev test test-backend eval artefacts guides clean
 
 install:
 	$(PY) -m pip install -r backend/requirements.txt
@@ -20,6 +20,12 @@ db:
 
 db-down:
 	docker compose down
+
+# Pull the local model into the Ollama *container* (its own model store).
+# A pull from the host's Ollama app does not reach the container, which is the
+# usual reason the dashboard says "model not pulled".
+models:
+	docker compose run --rm ollama-pull
 
 seed:
 	$(PY) scripts/generate_data.py
@@ -53,6 +59,11 @@ eval:
 # The summary reads docs/eval/report.json, so run `make eval` first.
 artefacts:
 	$(PY) scripts/make_artifacts.py
+
+# Product guide, user manual and manual test guide (PDF). All three read the
+# repo, so they cannot drift from the code or from the last evaluation report.
+guides:
+	$(PY) scripts/make_guides.py
 
 clean:
 	rm -rf data/artifacts data/index

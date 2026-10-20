@@ -4,7 +4,7 @@ import * as React from "react";
 import { useQuery } from "@tanstack/react-query";
 import { ChevronDown } from "lucide-react";
 import { cn } from "@/lib/utils";
-import { api } from "@/lib/api";
+import { api, downloadEligibilityPdf } from "@/lib/api";
 import type {
   EligibilityResult,
   MatchResponse,
@@ -76,6 +76,34 @@ function CandidateRow({ result }: { result: EligibilityResult }) {
         <CriteriaPopover result={result} />
       </td>
     </tr>
+  );
+}
+
+function DownloadReport({ studentId }: { studentId: string }) {
+  const [busy, setBusy] = React.useState(false);
+  const [error, setError] = React.useState<string | null>(null);
+
+  return (
+    <span className="flex items-center gap-2">
+      <button
+        onClick={async () => {
+          setBusy(true);
+          setError(null);
+          try {
+            await downloadEligibilityPdf(studentId);
+          } catch (err) {
+            setError(err instanceof Error ? err.message : "Download failed.");
+          } finally {
+            setBusy(false);
+          }
+        }}
+        disabled={busy}
+        className="rounded-md border bg-card px-2.5 py-1.5 text-[13px] transition-colors duration-150 hover:border-[var(--accent)] disabled:opacity-50"
+      >
+        {busy ? "Preparing..." : "Download PDF"}
+      </button>
+      {error && <span className="text-xs text-[var(--destructive)]">{error}</span>}
+    </span>
   );
 }
 
@@ -362,7 +390,7 @@ export default function PlacementPage() {
     setStudentId(role === "student" ? userId : "");
   }, [role, userId]);
 
-  const isStaff = role === "staff";
+  const isStaff = role === "staff" || role === "admin";
 
   const { data: placementRoles } = useQuery({
     queryKey: ["placement-roles"],
@@ -383,8 +411,6 @@ export default function PlacementPage() {
       api.eligibility({
         student_id: studentId,
         role_id: roleId ?? undefined,
-        user_id: userId,
-        requester_role: "student",
       }),
     enabled: !isStaff && studentId !== "",
   });
@@ -395,8 +421,6 @@ export default function PlacementPage() {
       api.skillGap(studentId, {
         company: selectedRole?.company,
         role: selectedRole?.title,
-        user_id: userId,
-        requester_role: "student",
       }),
     enabled: !isStaff && studentId !== "",
   });
@@ -407,6 +431,10 @@ export default function PlacementPage() {
         <div className="flex flex-wrap items-center gap-3">
           <h1 className="text-base font-semibold tracking-tight">Placement</h1>
           <RoleSelector value={roleId} onChange={setRoleId} />
+          {/* The report is generated server-side and streamed with
+              Content-Disposition, so a plain link is the whole download path.
+              Same-origin cookies carry the session. */}
+          {!isStaff && studentId !== "" && <DownloadReport studentId={studentId} />}
           {!isStaff && (
             <input
               value={studentId}

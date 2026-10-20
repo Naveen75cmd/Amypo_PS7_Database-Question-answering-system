@@ -2,7 +2,7 @@
 
 import * as React from "react";
 import Link from "next/link";
-import { usePathname } from "next/navigation";
+import { usePathname, useRouter } from "next/navigation";
 import { useQuery } from "@tanstack/react-query";
 import {
   IconLayoutSidebar,
@@ -15,18 +15,59 @@ import {
   IconBook2,
   IconChecklist,
   IconShieldLock,
+  IconLogout,
+  IconUsers,
 } from "@tabler/icons-react";
 import { cn } from "@/lib/utils";
 import { api } from "@/lib/api";
 import { useRole } from "@/components/providers";
 
-const NAV = [
-  { href: "/", label: "Chat", icon: IconMessages },
-  { href: "/placement", label: "Placement", icon: IconTarget },
-  { href: "/dashboard", label: "Dashboard", icon: IconDashboard },
-  { href: "/knowledge", label: "Knowledge", icon: IconBook2 },
-  { href: "/evaluation", label: "Evaluation", icon: IconChecklist },
-  { href: "/audit", label: "Audit trail", icon: IconShieldLock },
+type Permission =
+  | "chat"
+  | "placement_cohort"
+  | "placement_own"
+  | "monitoring_read"
+  | "monitoring_full"
+  | "ingest"
+  | "eval_view"
+  | "eval_run"
+  | "audit_log"
+  | "user_admin";
+
+/** Navigation is a view of the capability list, never a separate rule set. */
+const NAV: Array<{
+  href: string;
+  label: string;
+  icon: typeof IconMessages;
+  any: Permission[];
+}> = [
+  { href: "/", label: "Chat", icon: IconMessages, any: ["chat"] },
+  {
+    href: "/placement",
+    label: "Placement",
+    icon: IconTarget,
+    any: ["placement_own", "placement_cohort"],
+  },
+  {
+    href: "/dashboard",
+    label: "Dashboard",
+    icon: IconDashboard,
+    any: ["monitoring_read", "monitoring_full"],
+  },
+  { href: "/knowledge", label: "Knowledge", icon: IconBook2, any: ["ingest"] },
+  {
+    href: "/evaluation",
+    label: "Evaluation",
+    icon: IconChecklist,
+    any: ["eval_view", "eval_run"],
+  },
+  {
+    href: "/audit",
+    label: "Audit trail",
+    icon: IconShieldLock,
+    any: ["audit_log", "placement_cohort"],
+  },
+  { href: "/admin", label: "Users", icon: IconUsers, any: ["user_admin"] },
 ];
 
 function ResourcePill() {
@@ -63,34 +104,6 @@ function ResourcePill() {
   );
 }
 
-function RoleSwitcher() {
-  const { role, setRole } = useRole();
-  return (
-    <div
-      role="radiogroup"
-      aria-label="Demo role"
-      className="flex overflow-hidden rounded-md border text-xs"
-    >
-      {(["student", "staff"] as const).map((r) => (
-        <button
-          key={r}
-          role="radio"
-          aria-checked={role === r}
-          onClick={() => setRole(r)}
-          className={cn(
-            "px-2.5 py-1.5 capitalize transition-colors duration-150",
-            role === r
-              ? "bg-[var(--accent)] text-[var(--accent-foreground)]"
-              : "bg-card text-muted-foreground hover:text-foreground"
-          )}
-        >
-          {r}
-        </button>
-      ))}
-    </div>
-  );
-}
-
 function ThemeToggle() {
   const [dark, setDark] = React.useState<boolean | null>(null);
   React.useEffect(() => {
@@ -117,9 +130,86 @@ function ThemeToggle() {
   );
 }
 
+function AccessDenied({ label }: { label: string }) {
+  return (
+    <div className="grid h-full place-items-center px-6">
+      <div className="max-w-md rounded-lg border bg-card p-6">
+        <h1 className="text-base font-semibold tracking-tight">Not permitted</h1>
+        <p className="mt-2 text-[13px] leading-relaxed text-muted-foreground">
+          This account does not have access to {label}. Permission is decided by
+          the role on your account, not by this page. If you need access, ask an
+          administrator.
+        </p>
+      </div>
+    </div>
+  );
+}
+
+function UserChip() {
+  const { me, signOut } = useRole();
+  const [busy, setBusy] = React.useState(false);
+  if (!me) return null;
+  const who = me.user.student_id ?? me.user.username;
+  return (
+    <div className="flex items-center gap-2">
+      <div className="hidden flex-col items-end leading-tight sm:flex" title={me.user.email}>
+        <span className="text-[12px] font-medium">{who}</span>
+        <span className="text-[11px] capitalize text-muted-foreground">
+          {me.role}
+          {me.departments.length ? ` · ${me.departments.join(", ")}` : ""}
+        </span>
+      </div>
+      <button
+        onClick={async () => {
+          setBusy(true);
+          try {
+            await signOut();
+          } finally {
+            setBusy(false);
+          }
+        }}
+        disabled={busy}
+        className="flex items-center gap-1.5 rounded-md border px-2 py-1.5 text-[12px] text-muted-foreground transition-colors duration-150 hover:bg-muted hover:text-foreground"
+        title="Sign out"
+      >
+        <IconLogout size={14} />
+        <span className="hidden sm:inline">Sign out</span>
+      </button>
+    </div>
+  );
+}
+
 export function Shell({ children }: { children: React.ReactNode }) {
   const pathname = usePathname();
+  const router = useRouter();
+  const { ready, me, permissions } = useRole();
   const [collapsed, setCollapsed] = React.useState(false);
+
+  // The login screen owns the whole viewport: no navigation, no header.
+  if (pathname === "/login") return <main>{children}</main>;
+
+  if (!ready) {
+    return (
+      <div className="grid h-dvh place-items-center bg-background text-[13px] text-muted-foreground">
+        Loading session…
+      </div>
+    );
+  }
+
+  // Signed-out is already redirecting via AuthProvider; render nothing meanwhile
+  // rather than flashing a page the user cannot read.
+  if (!me) {
+    return <div className="h-dvh bg-background" aria-busy="true" />;
+  }
+
+  const allowed = NAV.filter((item) => item.any.some((p) => permissions[p]));
+  const current = NAV.find(
+    (item) =>
+      (item.href === "/" && pathname === "/") ||
+      (item.href !== "/" && pathname.startsWith(item.href))
+  );
+  const denied =
+    current !== undefined && !current.any.some((p) => permissions[p]);
 
   return (
     <div className="flex h-dvh overflow-hidden bg-background text-foreground">
@@ -137,7 +227,7 @@ export function Shell({ children }: { children: React.ReactNode }) {
           {!collapsed && <span className="text-sm font-semibold tracking-tight">AMYPO</span>}
         </div>
         <ul className="flex-1 space-y-0.5 p-2">
-          {NAV.map(({ href, label, icon: Icon }) => {
+          {allowed.map(({ href, label, icon: Icon }) => {
             const active = pathname === href;
             return (
               <li key={href}>
@@ -170,14 +260,21 @@ export function Shell({ children }: { children: React.ReactNode }) {
 
       <div className="flex min-w-0 flex-1 flex-col">
         <header className="flex h-12 shrink-0 items-center gap-3 border-b bg-card px-4">
-          <span className="text-[13px] text-muted-foreground">Policy &amp; Placement Copilot</span>
+          <button
+            onClick={() => router.push("/")}
+            className="text-[13px] text-muted-foreground hover:text-foreground"
+          >
+            Policy &amp; Placement Copilot
+          </button>
           <div className="ml-auto flex items-center gap-2">
             <ResourcePill />
-            <RoleSwitcher />
+            <UserChip />
             <ThemeToggle />
           </div>
         </header>
-        <main className="min-h-0 flex-1 overflow-hidden">{children}</main>
+        <main className="min-h-0 flex-1 overflow-hidden">
+          {denied ? <AccessDenied label={current.label.toLowerCase()} /> : children}
+        </main>
       </div>
     </div>
   );

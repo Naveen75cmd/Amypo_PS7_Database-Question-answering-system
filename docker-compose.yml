@@ -43,8 +43,24 @@ services:
       AMYPO_MYSQL_USER: amypo
       AMYPO_MYSQL_PASSWORD: amypo
       AMYPO_MYSQL_DATABASE: amypo
+      # The app resolves data/ and docs/ relative to its project root, which is
+      # /app inside the image. Both directories are mounted from the host under
+      # /data and /docs, so point the settings at those paths -- without this the
+      # benchmark file and the report directory are looked for at /app/data and
+      # /app/docs, which do not exist, and /eval/run answers 500.
+      AMYPO_DATA_DIR: /data
+      AMYPO_DOCS_DIR: /docs
       AMYPO_OLLAMA_BASE_URL: http://ollama:11434
       AMYPO_ALLOW_REAL_MODELS: "true"
+      # Sessions. The secret is read from the environment and never baked into
+      # the image; leaving it empty makes the backend generate a random key per
+      # process, which logs everyone out on restart but is always safe.
+      AMYPO_JWT_SECRET: ${AMYPO_JWT_SECRET:-}
+      # Seeds the demo accounts (admin / staff.* / one login per student) and
+      # turns on the collapsed demo panel on the login page.
+      AMYPO_DEMO_MODE: "true"
+      # Optional read-only key for the organisers' evaluation harness.
+      AMYPO_SERVICE_API_KEY: ${AMYPO_SERVICE_API_KEY:-}
     volumes:
       - ./data:/data
       - ./docs:/docs
@@ -71,6 +87,9 @@ services:
         # makes the upstream call, which is why the service name is correct here
         # even though it is not resolvable at build time.
         NEXT_PUBLIC_API_URL: http://backend:8000
+        # Shows the collapsed "Demo accounts" panel on the login screen. Public
+        # by design: it is a build-time flag, not a secret.
+        NEXT_PUBLIC_DEMO_MODE: "true"
     ports:
       - "3000:3000"
     mem_limit: 1g
@@ -82,10 +101,35 @@ services:
     ports:
       - "11434:11434"
     volumes:
-      # Pre-bake models for offline use:
-      #   docker run --rm -v amypo_ollama:/root/.ollama ollama/ollama pull phi3:mini
+      # The container keeps its own model store. `ollama pull` run on Windows or
+      # macOS fills the *host* store (C:\Users\...\.ollama or ~/.ollama) and the
+      # backend never sees it -- that is why a freshly pulled phi3:mini still
+      # showed as unavailable. `ollama-pull` below fills this volume instead.
       - amypo_ollama:/root/.ollama
     mem_limit: 4g
+
+  # One-shot model bootstrap, so `docker compose up` yields a working local
+  # model with no manual step. Idempotent: pulling a tag that is already there
+  # is a no-op, and the container exits once the model is in place. The backend
+  # starts extractive and re-probes every few seconds, so the order does not
+  # matter.
+  ollama-pull:
+    image: ollama/ollama:latest
+    environment:
+      # Talk to the service over the compose network, not to ourselves.
+      OLLAMA_HOST: http://ollama:11434
+      AMYPO_OLLAMA_MODEL: ${AMYPO_OLLAMA_MODEL:-phi3:mini}
+    entrypoint: ["/bin/sh", "-c"]
+    command:
+      - |
+        set -e
+        until ollama list >/dev/null 2>&1; do sleep 1; done
+        ollama pull "$${AMYPO_OLLAMA_MODEL}"
+        echo "model ready: $${AMYPO_OLLAMA_MODEL}"
+    depends_on:
+      ollama:
+        condition: service_started
+    restart: "no"
 
 volumes:
   amypo_mysql:

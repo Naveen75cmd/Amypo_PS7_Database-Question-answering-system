@@ -28,6 +28,17 @@ tags:
     description: Benchmark evaluation harness
   - name: health
     description: Component health
+  - name: auth
+    description: Local login, session refresh and identity
+  - name: admin
+    description: Account administration and the audit log (admin only)
+
+# Every endpoint requires a session unless it says `security: []`. The role is
+# read from the signed token; a request body cannot name its own role. `eval` is
+# the read-only machine account the organisers' harness authenticates as.
+security:
+  - bearerAuth: []
+  - apiKeyAuth: []
 
 paths:
   /health:
@@ -35,6 +46,7 @@ paths:
       tags: [health]
       summary: Component health
       operationId: getHealth
+      security: []
       responses:
         "200":
           description: Health report
@@ -126,6 +138,7 @@ paths:
       tags: [monitor]
       summary: Live RAM, CPU, bandwidth and simulated-cloud quota
       operationId: getResourceStatus
+      security: []
       responses:
         "200":
           description: Current resource snapshot
@@ -337,8 +350,282 @@ paths:
             application/json:
               schema: { $ref: "#/components/schemas/EvalRunResponse" }
 
+  /auth/login:
+    post:
+      tags: [auth]
+      summary: Sign in with a local account
+      description: >
+        Returns a short-lived access token and sets two httpOnly cookies (the
+        session and the refresh token). Failures are deliberately generic: 401
+        for a wrong username or password, 403 for a disabled account, 429 after
+        too many failures in the throttling window.
+      operationId: login
+      security: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: "#/components/schemas/LoginRequest" }
+      responses:
+        "200":
+          description: Session established
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/AuthResponse" }
+        "401": { description: Wrong username or password }
+        "403": { description: Account disabled }
+        "429": { description: Too many failed attempts }
+
+  /auth/refresh:
+    post:
+      tags: [auth]
+      summary: Rotate the session using the refresh cookie
+      description: >
+        Rotates the refresh token. Presenting an already-rotated token revokes
+        every session for that account, because the only way that happens is a
+        leaked token being replayed.
+      operationId: refreshSession
+      security: []
+      responses:
+        "200":
+          description: New session
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/AuthResponse" }
+        "401": { description: No valid refresh token }
+
+  /auth/logout:
+    post:
+      tags: [auth]
+      summary: Revoke the session and clear the cookies
+      operationId: logout
+      security: []
+      responses:
+        "200": { description: The refresh token was revoked and cookies cleared }
+
+  /auth/me:
+    get:
+      tags: [auth]
+      summary: The current session's identity and capabilities
+      operationId: getMe
+      responses:
+        "200":
+          description: Identity, scope and permission map
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/MeResponse" }
+        "401": { description: Not authenticated }
+
+  /admin/users:
+    get:
+      tags: [admin]
+      summary: List accounts (admin only)
+      operationId: listUsers
+      responses:
+        "200":
+          description: Accounts, without password hashes
+          content:
+            application/json:
+              schema:
+                type: array
+                items: { $ref: "#/components/schemas/UserOut" }
+        "403": { description: Not an administrator }
+    post:
+      tags: [admin]
+      summary: Create an account (admin only)
+      operationId: createUser
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: "#/components/schemas/AdminUserCreate" }
+      responses:
+        "201":
+          description: The created account
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/UserOut" }
+        "403": { description: Not an administrator }
+        "409": { description: Username already exists }
+
+  /admin/users/{user_id}:
+    patch:
+      tags: [admin]
+      summary: Enable/disable, change role, reset password or reassign (admin only)
+      description: >
+        Any change here ends that account's existing sessions, so a token issued
+        under the old role cannot keep the old access.
+      operationId: patchUser
+      parameters:
+        - name: user_id
+          in: path
+          required: true
+          schema: { type: string }
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: "#/components/schemas/AdminUserPatch" }
+      responses:
+        "200":
+          description: The updated account
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/UserOut" }
+        "403": { description: Not an administrator }
+        "404": { description: No such user }
+
+  /admin/audit:
+    get:
+      tags: [admin]
+      summary: Audit log of allowed and denied actions (admin only)
+      operationId: getAuditLog
+      parameters:
+        - name: limit
+          in: query
+          schema: { type: integer, default: 100, maximum: 500 }
+        - name: denied_only
+          in: query
+          schema: { type: boolean, default: false }
+      responses:
+        "200":
+          description: Audit entries with a summary
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/AuditResponse" }
+        "403": { description: Not an administrator }
+
 components:
+  securitySchemes:
+    bearerAuth:
+      type: http
+      scheme: bearer
+      bearerFormat: JWT
+      description: >
+        Access token from POST /auth/login. The web app never reads it: the same
+        value arrives as an httpOnly cookie, so no token touches JavaScript.
+    apiKeyAuth:
+      type: apiKey
+      in: header
+      name: X-API-Key
+      description: >
+        Read-only machine account (`eval` scope: public documents only, no
+        personal records) for the organisers' evaluation harness. Configured
+        with AMYPO_SERVICE_API_KEY.
+
   schemas:
+    LoginRequest:
+      type: object
+      required: [username, password]
+      properties:
+        username: { type: string, description: Username or email }
+        password: { type: string, format: password }
+    UserOut:
+      type: object
+      required: [id, username, email, role, is_active]
+      properties:
+        id: { type: string }
+        username: { type: string }
+        email: { type: string }
+        role: { $ref: "#/components/schemas/Role" }
+        student_id: { type: string, nullable: true }
+        department: { type: string, nullable: true }
+        cohort: { type: string, nullable: true }
+        is_active: { type: boolean }
+        created_at: { type: string, nullable: true }
+        last_login: { type: string, nullable: true }
+    AuthResponse:
+      type: object
+      required: [access_token, token_type, expires_in, user]
+      properties:
+        access_token: { type: string }
+        token_type: { type: string, default: bearer }
+        expires_in: { type: integer, description: Access-token lifetime in seconds }
+        user: { $ref: "#/components/schemas/UserOut" }
+    MeResponse:
+      type: object
+      required: [user, role, cache_scope, permissions]
+      properties:
+        user: { $ref: "#/components/schemas/UserOut" }
+        role: { $ref: "#/components/schemas/Role" }
+        cache_scope: { type: string }
+        student_id: { type: string, nullable: true }
+        departments:
+          type: array
+          items: { type: string }
+        cohorts:
+          type: array
+          items: { type: string }
+        assignments:
+          type: array
+          items:
+            type: object
+            properties:
+              id: { type: integer }
+              scope_kind: { type: string }
+              scope_value: { type: string }
+        permissions:
+          type: object
+          additionalProperties: { type: boolean }
+    AdminUserCreate:
+      type: object
+      required: [username, email, password, role]
+      properties:
+        username: { type: string }
+        email: { type: string }
+        password: { type: string, format: password }
+        role: { $ref: "#/components/schemas/Role" }
+        student_id: { type: string, nullable: true }
+        department: { type: string, nullable: true }
+        cohort: { type: string, nullable: true }
+        assignments:
+          type: array
+          items:
+            type: object
+            required: [scope_kind, scope_value]
+            properties:
+              scope_kind: { type: string, enum: [department, cohort, company] }
+              scope_value: { type: string }
+    AdminUserPatch:
+      type: object
+      properties:
+        is_active: { type: boolean }
+        role: { $ref: "#/components/schemas/Role" }
+        student_id: { type: string, nullable: true }
+        password: { type: string, format: password }
+        assignments:
+          type: array
+          items:
+            type: object
+            properties:
+              scope_kind: { type: string, enum: [department, cohort, company] }
+              scope_value: { type: string }
+    AuditEntry:
+      type: object
+      required: [id, action, allowed]
+      properties:
+        id: { type: integer }
+        actor_id: { type: string, nullable: true }
+        actor_role: { type: string, nullable: true }
+        action: { type: string }
+        target: { type: string, nullable: true }
+        scope: { type: string, nullable: true }
+        ip: { type: string, nullable: true }
+        allowed: { type: boolean }
+        detail: { type: string, nullable: true }
+        created_at: { type: string, nullable: true }
+    AuditResponse:
+      type: object
+      required: [entries, total]
+      properties:
+        entries:
+          type: array
+          items: { $ref: "#/components/schemas/AuditEntry" }
+        total: { type: integer }
+        summary:
+          type: object
+          additionalProperties: { type: integer }
+
     Route:
       type: string
       enum: [cache, local_model, offline_fallback, cloud_api]
@@ -354,7 +641,12 @@ components:
          skill_gap, candidate_recommendation, general]
 
     Complexity: { type: string, enum: [low, medium, high] }
-    Role: { type: string, enum: [student, staff] }
+    Role:
+      type: string
+      enum: [student, staff, admin, eval]
+      description: >
+        Read from the verified token, never from a request body. `eval` is the
+        read-only machine account for the organisers' evaluation harness.
 
     Source:
       type: object
@@ -544,7 +836,13 @@ components:
         bandwidth_kbps: { type: integer }
         api_quota_remaining: { type: integer }
         ollama_loaded: { type: boolean }
-        ollama_status: { type: string }
+        ollama_status:
+          type: string
+          description: >-
+            ok when the configured model is served; model_missing when the server
+            answers but the model is not pulled in its store; degraded when it
+            cannot be reached; unknown before the first probe.
+        ollama_detail: { type: [string, "null"] }
         ollama_last_latency_ms: { type: [number, "null"] }
         bandwidth_scenario: { type: string }
         sampled_at: { type: [string, "null"] }

@@ -2,8 +2,10 @@
 
 from __future__ import annotations
 
-from fastapi import APIRouter, HTTPException
+from fastapi import APIRouter, Depends, HTTPException
 
+from ...auth import deps
+from ...auth.principal import ROLE_ADMIN, ROLE_STAFF, Principal
 from ...core.schemas import (
     DecisionsResponse,
     MetricsResponse,
@@ -36,9 +38,15 @@ def resource_status() -> ResourceStatus:
     from ...core.container import get_container
 
     monitor = _monitor()
-    # Only report Ollama state if the client has already been built; probing here
-    # would add latency to a status endpoint that must stay cheap.
-    llm = get_container()._cache.get("llm")
+    # Build the client on first use so the dashboard can answer the one question
+    # this card exists for: is the local model ready? The probe is cached and only
+    # retried every llm_reprobe_interval_s, so a healthy client costs nothing
+    # after the first call -- and a stale "unknown" would otherwise persist until
+    # somebody happened to ask a question.
+    try:
+        llm = get_container().get("llm")
+    except Exception:  # pragma: no cover - the status endpoint must never 500
+        llm = None
     return monitor.status(llm)
 
 
@@ -52,7 +60,7 @@ def _router():
 
 
 @router.get("/metrics", response_model=MetricsResponse, summary="Aggregate quality and cost metrics")
-def metrics() -> MetricsResponse:
+def metrics(principal: Principal = Depends(deps.require(ROLE_STAFF, ROLE_ADMIN, action="metrics"))) -> MetricsResponse:
     from ...router.metrics import collect_metrics
 
     return collect_metrics(_router())
@@ -63,7 +71,7 @@ def metrics() -> MetricsResponse:
     response_model=RetrainResponse,
     summary="Retrain the complexity classifier and report the accuracy delta",
 )
-def retrain() -> RetrainResponse:
+def retrain(principal: Principal = Depends(deps.require(ROLE_ADMIN, action="router.retrain"))) -> RetrainResponse:
     """On-demand retrain (Phase 8, item 1).
 
     The brief asks for nightly/on-demand retraining from ``query_log`` plus
@@ -126,7 +134,10 @@ def retrain() -> RetrainResponse:
     response_model=DecisionsResponse,
     summary="Router decision log with reasoning",
 )
-def decisions(limit: int = 50) -> DecisionsResponse:
+def decisions(
+    limit: int = 50,
+    principal: Principal = Depends(deps.require(ROLE_STAFF, ROLE_ADMIN, action="router.decisions")),
+) -> DecisionsResponse:
     from ...core.schemas import RouterDecision
     from ...router.metrics import decision_rows
 
@@ -159,7 +170,10 @@ def decisions(limit: int = 50) -> DecisionsResponse:
     response_model=SimulateResponse,
     summary="Replay a resource scenario and observe routing changes",
 )
-def simulate(payload: SimulateRequest) -> SimulateResponse:
+def simulate(
+    payload: SimulateRequest,
+    principal: Principal = Depends(deps.require(ROLE_ADMIN, action="simulate")),
+) -> SimulateResponse:
     engine = _router()
     rows = engine.simulate(
         scenario=payload.scenario,

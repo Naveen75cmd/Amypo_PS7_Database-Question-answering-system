@@ -10,7 +10,17 @@ from fastapi.middleware.cors import CORSMiddleware
 
 from . import __version__
 from .api.middleware import RequestContextMiddleware
-from .api.routers import health, ask, route, placement, monitor, ingest, evaluate
+from .api.routers import (
+    health,
+    ask,
+    route,
+    placement,
+    monitor,
+    ingest,
+    evaluate,
+    auth,
+    admin,
+)
 from .core.logging import configure_logging, log_event
 from .core.settings import settings
 
@@ -64,7 +74,9 @@ def create_app() -> FastAPI:
     )
 
     prefix = settings.api_prefix
-    for module in (health, ask, route, placement, monitor, ingest, evaluate):
+    for module in (
+        health, auth, ask, route, placement, monitor, ingest, evaluate, admin
+    ):
         app.include_router(module.router, prefix=prefix)
 
     @app.get("/", include_in_schema=False)

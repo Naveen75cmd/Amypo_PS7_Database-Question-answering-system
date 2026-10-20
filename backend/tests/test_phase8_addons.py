@@ -93,6 +93,73 @@ def test_tiering_can_be_disabled(pinned_ram, monkeypatch: pytest.MonkeyPatch) ->
     assert _bare_client().select_model()[1] == "primary"
 
 
+# --- Ollama probe: "down" and "model missing" are different failures -----
+
+
+def _probe_client(monkeypatch: pytest.MonkeyPatch, tags: list[str] | None):
+    """An LLMClient whose probe sees ``tags`` from Ollama (or a network error)."""
+    import time
+
+    import httpx
+
+    from app.core.settings import settings
+    from app.llm.client import LLMClient
+
+    class _Response:
+        def raise_for_status(self) -> None:
+            pass
+
+        def json(self) -> dict:
+            return {"models": [{"name": name} for name in tags or []]}
+
+    def _get(*args, **kwargs):
+        if tags is None:
+            raise httpx.ConnectError("no route")
+        return _Response()
+
+    monkeypatch.setattr(httpx, "get", _get)
+    monkeypatch.setattr(settings, "stub_llm", False)
+    monkeypatch.setattr(settings, "allow_real_models", True)
+
+    client = LLMClient.__new__(LLMClient)
+    client.model = "phi3:mini"
+    client.base_url = "http://ollama:11434"
+    client._status = "unknown"
+    client._detail = ""
+    client._model_missing = False
+    client._available_models = set()
+    client._last_latency_ms = None
+    client._probe()
+    client._last_probe = time.monotonic()  # keep status() from re-probing
+    return client
+
+
+def test_probe_reports_a_running_server_without_the_model(monkeypatch) -> None:
+    """The dashboard must be able to say "pull it", not just "unavailable".
+
+    This is the exact case that produced a misleading card: phi3:mini had been
+    pulled into a different Ollama store, so the server answered with no models.
+    """
+    client = _probe_client(monkeypatch, ["tinyllama:latest"])
+    assert client.status() == "model_missing"
+    assert "not pulled" in client.status_detail()
+    assert "ollama:11434" in client.status_detail()
+    assert client.is_stub  # the pipeline falls back rather than failing
+
+
+def test_probe_reports_ok_when_the_model_is_present(monkeypatch) -> None:
+    client = _probe_client(monkeypatch, ["phi3:mini"])
+    assert client.status() == "ok"
+    assert not client.is_stub
+    assert "phi3:mini" in client.status_detail()
+
+
+def test_probe_reports_degraded_when_the_server_is_unreachable(monkeypatch) -> None:
+    client = _probe_client(monkeypatch, None)
+    assert client.status() == "degraded"
+    assert "cannot reach Ollama" in client.status_detail()
+
+
 def test_extractive_tier_answers_without_a_model() -> None:
     """Tier 3 must still answer by quoting evidence, not return nothing."""
     from app.llm.client import extractive_answer
@@ -671,20 +738,18 @@ def _audit_row(question: str = "eligibility company=Zoho", count: int = 3) -> No
     )
 
 
-def test_cohort_audit_trail_is_staff_only(client) -> None:
+def test_cohort_audit_trail_is_staff_only(api_client) -> None:
     """Writing the row is not a control; reading it back is."""
     _audit_row()
-    denied = client.get(
-        "/api/v1/placement/cohort-queries", params={"requester_role": "student"}
-    )
+    student = api_client("student", student_id="S102")
+    denied = student.get("/api/v1/placement/cohort-queries")
     assert denied.status_code == 403, denied.text
 
 
 def test_cohort_audit_trail_lists_the_query_metadata(client) -> None:
     _audit_row(count=3)
     resp = client.get(
-        "/api/v1/placement/cohort-queries",
-        params={"requester_role": "staff", "limit": 10},
+        "/api/v1/placement/cohort-queries", params={"limit": 10}
     )
     assert resp.status_code == 200, resp.text
     rows = resp.json()
@@ -696,8 +761,7 @@ def test_cohort_audit_trail_lists_the_query_metadata(client) -> None:
 
 def test_cohort_audit_trail_rejects_an_unbounded_limit(client) -> None:
     resp = client.get(
-        "/api/v1/placement/cohort-queries",
-        params={"requester_role": "staff", "limit": 100000},
+        "/api/v1/placement/cohort-queries", params={"limit": 100000}
     )
     assert resp.status_code == 422, resp.text
 
@@ -721,9 +785,8 @@ def _pdf(client, student_id: str, **params):
     )
 
 
-def test_pdf_report_is_served_as_a_real_pdf(client, seeded_student) -> None:
-    resp = _pdf(client, seeded_student, user_id=seeded_student,
-                requester_role="student")
+def test_pdf_report_is_served_as_a_real_pdf(api_client, seeded_student) -> None:
+    resp = _pdf(api_client("student", student_id=seeded_student), seeded_student)
     assert resp.status_code == 200, resp.text
     assert resp.headers["content-type"].startswith("application/pdf")
     body = resp.content
@@ -734,21 +797,19 @@ def test_pdf_report_is_served_as_a_real_pdf(client, seeded_student) -> None:
     assert f"eligibility-{seeded_student}.pdf" in resp.headers["content-disposition"]
 
 
-def test_pdf_report_is_non_trivial(client, seeded_student) -> None:
-    resp = _pdf(client, seeded_student, user_id=seeded_student,
-                requester_role="student")
+def test_pdf_report_is_non_trivial(api_client, seeded_student) -> None:
+    resp = _pdf(api_client("student", student_id=seeded_student), seeded_student)
     assert resp.status_code == 200
     # An empty shell would technically be a PDF; require real page content.
     assert len(resp.content) > 2000, f"suspiciously small: {len(resp.content)} bytes"
 
 
-def test_pdf_report_names_the_student_and_a_verdict(client, seeded_student) -> None:
+def test_pdf_report_names_the_student_and_a_verdict(api_client, seeded_student) -> None:
     """The artefact must carry the data it claims to report."""
     from pypdf import PdfReader
     import io
 
-    resp = _pdf(client, seeded_student, user_id=seeded_student,
-                requester_role="student")
+    resp = _pdf(api_client("student", student_id=seeded_student), seeded_student)
     assert resp.status_code == 200
     reader = PdfReader(io.BytesIO(resp.content))
     text = "\n".join(page.extract_text() or "" for page in reader.pages)
@@ -758,15 +819,15 @@ def test_pdf_report_names_the_student_and_a_verdict(client, seeded_student) -> N
 
 
 def test_pdf_report_denies_exporting_another_students_record(
-    client, seeded_student
+    api_client, seeded_student
 ) -> None:
     """The export must enforce the same scope as the JSON endpoint."""
-    resp = _pdf(client, seeded_student, user_id="S999", requester_role="student")
+    resp = _pdf(api_client("student", student_id=seeded_student), "S999")
     assert resp.status_code == 403, resp.text
 
 
 def test_pdf_report_404s_for_unknown_student(client) -> None:
-    resp = _pdf(client, "NOPE", user_id="NOPE", requester_role="staff")
+    resp = _pdf(client, "NOPE")
     assert resp.status_code == 404, resp.text
 
 

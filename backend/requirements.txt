@@ -1,3 +1,7 @@
+# Local authentication: bcrypt password hashes, HS256 session tokens. Both are
+# local-only libraries; nothing here contacts an identity provider.
+PyJWT>=2.8
+bcrypt>=4.1
 fastapi>=0.115
 uvicorn[standard]>=0.30
 pydantic>=2.7

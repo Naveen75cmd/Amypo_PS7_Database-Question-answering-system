@@ -83,11 +83,34 @@ class LLMClient:
         # (smaller model) or extractive (no local model at all).
         self.tier: str = "primary"
         self.downgrade_reason: str | None = None
+        # Monotonic timestamp of the last probe, so a degraded client can try
+        # again later instead of staying degraded for the process lifetime.
+        self._last_probe: float = 0.0
+        self._probe()
+
+    # --- status ---------------------------------------------------------
+
+    def refresh_if_stale(self) -> None:
+        """Re-probe a degraded client, at most every ``llm_reprobe_interval_s``.
+
+        The first probe runs while the process is still starting, which races
+        Ollama: a backend that comes up a second before the model server stayed
+        degraded (and answered from the extractive stub) until it was restarted.
+        The same applied to pulling a missing model while the app was running.
+        Successful clients are never re-probed -- a working model path is not
+        worth an HTTP round-trip per question -- and the interval bounds the
+        cost when it is genuinely down.
+        """
+        if self._status == "ok":
+            return
+        if time.monotonic() - self._last_probe < settings.llm_reprobe_interval_s:
+            return
         self._probe()
 
     # --- status ---------------------------------------------------------
 
     def _probe(self) -> None:
+        self._last_probe = time.monotonic()
         if settings.stub_llm or not settings.allow_real_models:
             self._status = "degraded"
             self._detail = "stub LLM forced by configuration"
@@ -104,18 +127,27 @@ class LLMClient:
             # machine. Detect it here so the first request does not spend the
             # whole timeout budget discovering it.
             if self.model not in models and not self._model_matches(models):
-                self._status = "degraded"
+                # "model_missing" is deliberately distinct from "degraded": the
+                # server is healthy, so the fix is a pull on *this* server (not
+                # a restart), and the dashboard can say exactly that. Pulling
+                # phi3:mini into a host Ollama does nothing for the compose
+                # Ollama container, which has its own model store -- the most
+                # common way to see an "unavailable" card with a pulled model.
+                self._status = "model_missing"
                 self._model_missing = True
                 self._detail = (
-                    f"ollama is running but {self.model} is not pulled "
-                    f"(available: {available}); using stub"
+                    f"{self.model} is not pulled on the Ollama at {self.base_url} "
+                    f"(available: {available})"
                 )
                 return
             self._status = "ok"
+            self._model_missing = False
             self._detail = f"ollama at {self.base_url}; models: {available}"
         except Exception as exc:
             self._status = "degraded"
-            self._detail = f"ollama unavailable ({type(exc).__name__}); using stub"
+            self._detail = (
+                f"cannot reach Ollama at {self.base_url} ({type(exc).__name__}); using stub"
+            )
 
     def _model_matches(self, models: set[str]) -> bool:
         """Whether any pulled tag satisfies the configured model name.
@@ -165,9 +197,14 @@ class LLMClient:
         return self.model, "primary"
 
     def status(self) -> str:
+        self.refresh_if_stale()
+        return self._status_raw()
+
+    def _status_raw(self) -> str:
         return self._status
 
     def status_detail(self) -> str:
+        self.refresh_if_stale()
         return self._detail
 
     @property
@@ -180,6 +217,7 @@ class LLMClient:
 
     def healthy(self) -> bool:
         """Whether the model path should be attempted at all."""
+        self.refresh_if_stale()
         return not self.is_stub
 
     # --- generation -----------------------------------------------------

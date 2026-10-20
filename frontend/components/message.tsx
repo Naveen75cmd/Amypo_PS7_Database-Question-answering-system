@@ -3,8 +3,9 @@
 import * as React from "react";
 import ReactMarkdown from "react-markdown";
 import remarkGfm from "remark-gfm";
-import { IconCopy } from "@tabler/icons-react";
+import { IconCopy, IconThumbDown, IconThumbUp } from "@tabler/icons-react";
 import { cn } from "@/lib/utils";
+import { api } from "@/lib/api";
 import type {
   CarbonEstimate,
   ClosestRecord,
@@ -351,8 +352,12 @@ export function Message({
   onCitation?: (n: number) => void;
 }) {
   const [copied, setCopied] = React.useState(false);
+  // Thumbs feed /router/retrain; the dashboard cites this count, so the control
+  // has to exist here rather than only as an endpoint.
+  const [rated, setRated] = React.useState<-1 | 1 | null>(null);
   const isUser = message.role === "user";
-  const { userId, role } = useRole();
+  // The session decides whether this reader gets a personal career card.
+  const { userId, permissions } = useRole();
 
   if (isUser) {
     return (
@@ -450,7 +455,7 @@ export function Message({
       )}
 
       {message.intent && CAREER_INTENTS.has(message.intent) && (
-        <CareerReadinessCard studentId={role === "student" ? userId : null} />
+        <CareerReadinessCard studentId={permissions.own_records ? userId : null} />
       )}
 
       <div className="flex flex-wrap items-center gap-x-3 gap-y-1 px-1 text-xs text-muted-foreground">
@@ -483,18 +488,49 @@ export function Message({
             {message.sources.length} source{message.sources.length > 1 ? "s" : ""}
           </span>
         )}
-        <button
-          onClick={() => {
-            navigator.clipboard.writeText(message.text).then(() => {
-              setCopied(true);
-              setTimeout(() => setCopied(false), 1500);
-            });
-          }}
-          className="ml-auto flex items-center gap-1 transition-colors duration-150 hover:text-foreground"
-        >
-          <IconCopy size={12} />
-          {copied ? "Copied" : "Copy"}
-        </button>
+        <div className="ml-auto flex items-center gap-1">
+          {message.traceId && (
+            <>
+              {([
+                { value: 1 as const, label: "Helpful", Icon: IconThumbUp },
+                { value: -1 as const, label: "Not helpful", Icon: IconThumbDown },
+              ]).map(({ value, label, Icon }) => (
+                <button
+                  key={label}
+                  aria-label={label}
+                  aria-pressed={rated === value}
+                  title={rated === value ? `${label} - recorded` : label}
+                  onClick={() => {
+                    if (!message.traceId) return;
+                    const previous = rated;
+                    setRated(value);
+                    api
+                      .feedback({ request_id: message.traceId, rating: value })
+                      .catch(() => setRated(previous));
+                  }}
+                  className={cn(
+                    "grid size-5 place-items-center rounded transition-colors duration-150 hover:text-foreground",
+                    rated === value && "text-[var(--accent)]"
+                  )}
+                >
+                  <Icon size={12} />
+                </button>
+              ))}
+            </>
+          )}
+          <button
+            onClick={() => {
+              navigator.clipboard.writeText(message.text).then(() => {
+                setCopied(true);
+                setTimeout(() => setCopied(false), 1500);
+              });
+            }}
+            className="flex items-center gap-1 transition-colors duration-150 hover:text-foreground"
+          >
+            <IconCopy size={12} />
+            {copied ? "Copied" : "Copy"}
+          </button>
+        </div>
       </div>
     </div>
   );

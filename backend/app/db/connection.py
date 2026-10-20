@@ -68,6 +68,21 @@ def connect() -> Engine:
     return get_engine()
 
 
+def _seed_after_migrate() -> None:
+    """Create the demo accounts once the auth tables exist.
+
+    Imported lazily (the auth service imports this module) and guarded: a
+    database without the seeded ``students`` rows is still a usable database,
+    and a seeding failure must not stop the app from starting.
+    """
+    try:
+        from ..auth.service import seed_accounts
+
+        seed_accounts()
+    except Exception as exc:  # pragma: no cover - never block startup
+        log.warning("could not seed demo accounts: %s", exc)
+
+
 def _ensure_migrated() -> None:
     global _initialised
     if _initialised:
@@ -77,6 +92,7 @@ def _ensure_migrated() -> None:
             from .migrate import apply_migrations
 
             apply_migrations(get_engine())
+            _seed_after_migrate()
             _initialised = True
 
 
@@ -93,6 +109,7 @@ def init_db() -> Engine:
 
     engine = get_engine()
     apply_migrations(engine)
+    _seed_after_migrate()
     return engine
 
 

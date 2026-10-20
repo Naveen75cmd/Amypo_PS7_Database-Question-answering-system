@@ -17,16 +17,12 @@ export function HistorySidebar({
   open: boolean;
   onReopen: (requestId: string, question: string) => void;
 }) {
-  const { role, userId } = useRole();
+  const { ready } = useRole();
   const { data } = useQuery({
-    queryKey: ["history", role, userId],
-    queryFn: () =>
-      api.history({
-        limit: 30,
-        user_id: role === "student" ? userId : null,
-        requester_role: role,
-      }),
-    enabled: open,
+    // The server scopes this to the session, so the cache key needs no role.
+    queryKey: ["history"],
+    queryFn: () => api.history({ limit: 30 }),
+    enabled: open && ready,
     refetchInterval: 15_000,
   });
 

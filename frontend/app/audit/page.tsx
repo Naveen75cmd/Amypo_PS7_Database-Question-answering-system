@@ -6,72 +6,143 @@ import { api } from "@/lib/api";
 import { useRole } from "@/components/providers";
 
 /**
- * Audit trail for staff cohort queries (Phase 8, item 7).
+ * Two audit surfaces, chosen by the session's permissions.
  *
- * Every query that ranges over many students' records is written to
- * `cohort_queries` by the backend; this page is the other half of that control —
- * a log nobody can read is not an audit trail. It shows query metadata (who ran
- * it, over which cohort, how many rows it touched), never student records, so
- * opening it does not widen anyone's access. The backend enforces staff-only and
- * returns 403 for a student, which is rendered as a plain explanation rather
- * than an error.
+ * Staff see the cohort-query trail: every query that ranged over many students'
+ * records, with the rows it touched. Admin see the full `audit_log`: logins,
+ * failures, denials, personal-data reads, ingests and role changes.
+ *
+ * Both pages read metadata only — never the student records themselves — so
+ * reading an audit trail never widens access. The server enforces both scopes;
+ * this page only decides which table to ask for.
  */
 export default function AuditPage() {
-  const { role } = useRole();
-  const { data, error, isPending, refetch } = useQuery({
-    queryKey: ["cohort-queries", role],
-    queryFn: () => api.cohortQueries({ limit: 100, requester_role: role }),
+  const { permissions } = useRole();
+  const isAdmin = permissions.audit_log;
+  const isStaff = permissions.placement_cohort;
+  const [deniedOnly, setDeniedOnly] = React.useState(false);
+
+  const cohort = useQuery({
+    queryKey: ["cohort-queries"],
+    queryFn: () => api.cohortQueries({ limit: 100 }),
+    enabled: isStaff && !isAdmin,
   });
 
-  const denied = error instanceof Error && /staff/i.test(error.message);
+  const audit = useQuery({
+    queryKey: ["admin-audit", deniedOnly],
+    queryFn: () => api.adminAudit({ limit: 200, denied_only: deniedOnly }),
+    enabled: isAdmin,
+    refetchInterval: 20_000,
+  });
 
   return (
     <div className="h-full overflow-y-auto">
-      <div className="mx-auto max-w-[980px] space-y-4 px-6 py-6">
+      <div className="mx-auto max-w-[1040px] space-y-4 px-6 py-6">
         <div className="flex flex-wrap items-center gap-3">
           <h1 className="text-base font-semibold tracking-tight">Audit trail</h1>
           <p className="text-xs text-muted-foreground">
-            Cohort queries over student records, newest first.
+            {isAdmin
+              ? "Every allowed and denied action, newest first."
+              : "Cohort queries over student records, newest first."}
           </p>
-          {role === "staff" && (
-            <button
-              onClick={() => refetch()}
-              className="ml-auto rounded-md border bg-card px-2.5 py-1.5 text-[13px] transition-colors duration-150 hover:border-[var(--accent)]"
-            >
-              Refresh
-            </button>
+          {isAdmin && (
+            <label className="ml-auto flex items-center gap-2 text-[12px] text-muted-foreground">
+              <input
+                type="checkbox"
+                checked={deniedOnly}
+                onChange={(e) => setDeniedOnly(e.target.checked)}
+              />
+              Denied only
+            </label>
           )}
         </div>
 
-        {role !== "staff" && (
+        {!isAdmin && !isStaff && (
           <p className="rounded-lg border px-3.5 py-2.5 text-[13px] text-muted-foreground">
-            Cohort queries are limited to staff. A student account can see its own
-            eligibility and nothing about other students.
+            Audit trails are limited to staff and administrators. Your own history
+            is in the chat sidebar.
           </p>
         )}
 
-        {denied && (
-          <p className="rounded-lg border px-3.5 py-2.5 text-[13px] text-muted-foreground">
-            The server refused this list for the current role.
-          </p>
-        )}
-
-        {role === "staff" && isPending && (
-          <div className="space-y-2" aria-busy>
-            {Array.from({ length: 6 }).map((_, i) => (
-              <div key={i} className="h-9 animate-pulse rounded-md bg-muted" />
-            ))}
+        {isAdmin && audit.data && (
+          <div className="flex flex-wrap gap-4 rounded-lg border bg-card px-3.5 py-2.5 text-[12px] text-muted-foreground">
+            <span>
+              allowed <strong className="text-foreground">{audit.data.summary.allowed ?? 0}</strong>
+            </span>
+            <span>
+              denied <strong className="text-foreground">{audit.data.summary.denied ?? 0}</strong>
+            </span>
+            <span>
+              total <strong className="text-foreground">{audit.data.summary.total ?? 0}</strong>
+            </span>
           </div>
         )}
 
-        {role === "staff" && error && !denied && (
+        {isAdmin && audit.error && (
           <p className="rounded-lg border px-3.5 py-2.5 text-[13px] text-[var(--destructive)]">
-            {error instanceof Error ? error.message : "The audit log could not be read."}
+            {audit.error instanceof Error ? audit.error.message : "The audit log could not be read."}
           </p>
         )}
 
-        {role === "staff" && data && (
-          data.length === 0 ? (
+        {isAdmin && audit.data && (
+          <table className="w-full border-collapse text-[13px]">
+            <thead>
+              <tr className="text-left text-xs text-muted-foreground">
+                <th className="border-b px-2 py-1.5 font-medium">When</th>
+                <th className="border-b px-2 py-1.5 font-medium">Actor</th>
+                <th className="border-b px-2 py-1.5 font-medium">Action</th>
+                <th className="border-b px-2 py-1.5 font-medium">Target</th>
+                <th className="border-b px-2 py-1.5 font-medium">Result</th>
+              </tr>
+            </thead>
+            <tbody>
+              {audit.data.entries.map((row) => (
+                <tr key={row.id} className="align-top">
+                  <td className="border-b px-2 py-1.5 tabular-nums text-muted-foreground">
+                    {row.created_at ? row.created_at.slice(0, 19).replace("T", " ") : "—"}
+                  </td>
+                  <td className="border-b px-2 py-1.5">
+                    {row.actor_role ?? "anonymous"}
+                    {row.actor_id ? (
+                      <span className="ml-1 text-[11px] text-muted-foreground">
+                        {row.actor_id.slice(0, 8)}
+                      </span>
+                    ) : null}
+                  </td>
+                  <td className="border-b px-2 py-1.5">
+                    <code>{row.action}</code>
+                  </td>
+                  <td className="border-b px-2 py-1.5 text-muted-foreground">
+                    {row.target || "—"}
+                    {row.detail ? (
+                      <span className="block text-[11px]">{row.detail}</span>
+                    ) : null}
+                  </td>
+                  <td className="border-b px-2 py-1.5">
+                    <span
+                      className={
+                        row.allowed
+                          ? "rounded bg-muted px-1.5 py-0.5 text-[11px]"
+                          : "rounded bg-red-500/15 px-1.5 py-0.5 text-[11px]"
+                      }
+                    >
+                      {row.allowed ? "allowed" : "denied"}
+                    </span>
+                  </td>
+                </tr>
+              ))}
+            </tbody>
+          </table>
+        )}
+
+        {isStaff && !isAdmin && cohort.error && (
+          <p className="rounded-lg border px-3.5 py-2.5 text-[13px] text-[var(--destructive)]">
+            {cohort.error instanceof Error ? cohort.error.message : "The audit log could not be read."}
+          </p>
+        )}
+
+        {isStaff && !isAdmin && cohort.data && (
+          cohort.data.length === 0 ? (
             <p className="rounded-lg border px-3.5 py-2.5 text-[13px] text-muted-foreground">
               No cohort queries recorded yet. Run an eligibility or cohort question
               and it will appear here.
@@ -88,7 +159,7 @@ export default function AuditPage() {
                 </tr>
               </thead>
               <tbody>
-                {data.map((row) => (
+                {cohort.data.map((row) => (
                   <tr key={row.id} className="align-top">
                     <td className="border-b px-2 py-1.5 tabular-nums text-muted-foreground">
                       {row.created_at ? row.created_at.slice(0, 19).replace("T", " ") : "—"}

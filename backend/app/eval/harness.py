@@ -57,6 +57,9 @@ ROLE = "staff"  # the benchmark answers as staff; access control has its own tes
 # Threshold grids. The chosen value is always reported next to each sweep so a
 # judge sees the operating point, not just a curve.
 VERIFIER_SWEEP = (0.30, 0.40, 0.45, 0.50, 0.55, 0.60, 0.70, 0.80)
+# The shipped floor is appended at run time so the sweep always carries the
+# operating point that produced the delivered answers.
+RELEVANCE_SWEEP = (0.0, 4.5, 9.0, 10.0, 12.0, 15.0, 18.0)
 CACHE_SWEEP = (0.80, 0.85, 0.90, 0.92, 0.95, 0.98)
 RAM_FLOOR_SWEEP = (512, 900, 1500, 2600, 4096)
 
@@ -77,6 +80,9 @@ class EvalOptions:
     include_scenarios: bool = True
     include_sweeps: bool = True
     include_load_test: bool = False  # scripts/evaluate.py turns this on
+    # Phase 9 item 5: the access-control red-team suite must run in the report
+    # that the judges read, so it is on by default.
+    include_access_control: bool = True
     load_users: int = 20
     load_queries_per_user: int = 3
     write_report: bool = False
@@ -305,6 +311,13 @@ def _answer_pass(
         latencies.append(latency_ms)
 
         score = _score_item(item, result)
+        # Mirrors AskPipeline._relevance: the best BM25 score retrieval produced,
+        # or None when there is no sparse signal at all. Recorded per row so the
+        # relevance-floor sweep can be re-derived offline from one pass.
+        best_bm25 = max(
+            (float(r.get("bm25_score") or 0.0) for r in (result.retrieval or [])),
+            default=0.0,
+        )
         cited = [source.record_id for source in result.sources]
         cited_ids.update(cited)
         retrieved_ids = {
@@ -324,6 +337,7 @@ def _answer_pass(
                     else None
                 ),
                 "confidence": round(result.confidence, 4),
+                "relevance": round(best_bm25, 4) if best_bm25 > 0.0 else None,
                 "groundedness": round(result.grounding.groundedness, 4),
                 "supported_claims": result.grounding.supported_claims,
                 "total_claims": result.grounding.total_claims,
@@ -669,16 +683,84 @@ def _sweeps(
     index: Any,
     items: list[BenchmarkItem],
     off_rows: list[dict[str, Any]],
+    pipeline: Any | None = None,
+    options: EvalOptions | None = None,
+    on_summary: dict[str, Any] | None = None,
 ) -> dict[str, Any]:
-    """Verifier / cache-cosine / RAM-floor sweeps.
+    """Verifier / relevance-floor / cache-cosine / RAM-floor sweeps.
 
     The verifier sweep runs on the *gate-off* rows: every answer there was
     delivered and scored, so re-deriving abstention at any threshold is exact.
+    The relevance sweep needs real passes (the gate abstains before generation),
+    so it is skipped unless the pipeline and its answer summary are supplied.
     """
-    return {
+    sweeps: dict[str, Any] = {
         "verifier_threshold": _verifier_sweep(off_rows),
         "cache_cosine": _cache_sweep(index, items),
         "ram_floor": _ram_floor_sweep(engine, items),
+    }
+    if pipeline is not None and options is not None and on_summary is not None:
+        sweeps["relevance_floor"] = _relevance_sweep(
+            pipeline, items, options, on_summary
+        )
+    return sweeps
+
+
+def _relevance_sweep(
+    pipeline: Any,
+    items: list[BenchmarkItem],
+    options: EvalOptions,
+    on_summary: dict[str, Any],
+) -> dict[str, Any]:
+    """What the retrieval gate buys: accuracy against hallucination, per floor.
+
+    ``retrieval_relevance_floor`` abstains *before* generation when the best
+    BM25 score retrieval produced is below the floor, so this sweep cannot be
+    re-derived from one pass: the withheld answers were never generated, and a
+    row that bypassed the gate (a SQL template, the placement engine, an
+    explicit no-record template) must keep its answer even when its relevance
+    is low. One real answer pass per floor is the only exact measurement; the
+    shipped floor reuses the delivered pass instead of repeating it.
+    """
+    current = float(settings.retrieval_relevance_floor)
+    grid = sorted({*(RELEVANCE_SWEEP), current})
+    points: list[dict[str, Any]] = []
+    for floor in grid:
+        if abs(floor - current) < 1e-9:
+            summary = on_summary
+        else:
+            with _patched_setting("retrieval_relevance_floor", floor):
+                summary, _rows, _cited = _answer_pass(
+                    pipeline, _NoRouteEngine(), items, options
+                )
+        answerable = summary["answerable"]
+        points.append(
+            {
+                "floor": floor,
+                "accuracy": summary["accuracy"],
+                "correct": summary["correct"],
+                "answered": summary["answered"],
+                "abstained_answerable": summary["abstained_answerable"],
+                "hallucinated": summary["hallucinated"],
+                "hallucination_rate": summary["hallucination_rate"],
+                "abstention_rate_unanswerable": summary["abstention_rate_unanswerable"],
+                "answerable": answerable,
+            }
+        )
+    chosen = next((p for p in points if abs(p["floor"] - current) < 1e-9), None)
+    return {
+        "points": points,
+        "chosen": current,
+        "chosen_point": chosen,
+        "note": (
+            "One real answer pass per floor through the shipped pipeline (the gate "
+            "abstains before generation, so a withheld answer does not exist to "
+            "re-derive; gate-exempt answers -- SQL templates, the placement engine, "
+            "explicit no-record templates -- are kept as delivered). Accuracy counts "
+            "an abstention as not correct and hallucination is the share of all "
+            "questions answered despite being unanswerable or ungrounded. The "
+            "current config is marked 'chosen' and reuses the delivered pass."
+        ),
     }
 
 
@@ -1050,6 +1132,17 @@ def _headline(report: dict[str, Any]) -> dict[str, Any]:
         "load_p95_ms": load.get("p95_ms"),
         "scenarios_passed": sum(1 for s in scenarios if s["passed"]),
         "scenarios_total": len(scenarios),
+        # Phase 9 item 5: the red-team leak count is a headline number, not a
+        # footnote, because the plan makes "must be 0" a pass condition.
+        "access_control_leaks": (report.get("access_control") or {}).get(
+            "leaks", 0
+        ),
+        "access_control_cases": (report.get("access_control") or {}).get(
+            "cases", 0
+        ),
+        "access_control_pass": bool(
+            (report.get("access_control") or {}).get("passed", False)
+        ),
     }
 
 
@@ -1070,6 +1163,7 @@ def run_harness(options: EvalOptions | None = None) -> dict[str, Any]:
     index = container.get("index")
     engine = container.get("router")
     from ..api.ask_service import AskPipeline
+    from .access_control import run_access_control
 
     pipeline = AskPipeline(index, container.get("llm"), container.get("verifier"))
 
@@ -1086,12 +1180,31 @@ def run_harness(options: EvalOptions | None = None) -> dict[str, Any]:
         ablation, off_rows = _verifier_ablation(pipeline, items, options, answers)
         scenarios = scenario_suite(engine) if options.include_scenarios else []
         sweeps = (
-            _sweeps(engine, index, items, off_rows) if options.include_sweeps else {}
+            _sweeps(
+                engine,
+                index,
+                items,
+                off_rows,
+                pipeline=pipeline,
+                options=options,
+                on_summary=answers,
+            )
+            if options.include_sweeps
+            else {}
         )
         load = (
             _load_test(engine, pipeline, items, options)
             if options.include_load_test
             else {"ran": False, "reason": "skipped (API run); use `make eval`"}
+        )
+        access = (
+            run_access_control()
+            if options.include_access_control
+            else {
+                "ran": False,
+                "leaks": 0,
+                "reason": "skipped (--no-access-control)",
+            }
         )
     wall_s = time.perf_counter() - started
 
@@ -1111,6 +1224,7 @@ def run_harness(options: EvalOptions | None = None) -> dict[str, Any]:
         "scenarios": scenarios,
         "sweeps": sweeps,
         "load_test": load,
+        "access_control": access,
         "failure_analysis": _failure_analysis(per_item, options),
         "resources": {
             "peak_rss_mb": round(ram.peak_rss_mb, 1),

@@ -4,7 +4,80 @@
  * browser never needs CORS.
  */
 
-export type Role = "student" | "staff";
+export type Role = "student" | "staff" | "admin" | "eval";
+
+export interface UserOut {
+  id: string;
+  username: string;
+  email: string;
+  role: Role;
+  student_id: string | null;
+  department: string | null;
+  cohort: string | null;
+  is_active: boolean;
+  created_at: string | null;
+  last_login: string | null;
+}
+
+/** What the signed-in session may do. Presentation only — the backend enforces it. */
+export interface Permissions {
+  chat: boolean;
+  own_records: boolean;
+  staff_docs: boolean;
+  admin_docs: boolean;
+  placement_own: boolean;
+  placement_cohort: boolean;
+  placement_weights: boolean;
+  criteria_edit: boolean;
+  ingest: boolean;
+  ingest_approve: boolean;
+  user_admin: boolean;
+  router_config: boolean;
+  monitoring_full: boolean;
+  monitoring_read: boolean;
+  audit_log: boolean;
+  eval_run: boolean;
+  eval_view: boolean;
+  simulator: boolean;
+  service_account: boolean;
+}
+
+export interface MeResponse {
+  user: UserOut;
+  role: Role;
+  cache_scope: string;
+  student_id: string | null;
+  departments: string[];
+  cohorts: string[];
+  assignments: Array<{ id: number; scope_kind: string; scope_value: string }>;
+  permissions: Permissions;
+}
+
+export interface AuthResponse {
+  access_token: string;
+  token_type: string;
+  expires_in: number;
+  user: UserOut;
+}
+
+export interface AuditEntry {
+  id: number;
+  actor_id: string | null;
+  actor_role: string | null;
+  action: string;
+  target: string | null;
+  scope: string | null;
+  ip: string | null;
+  allowed: boolean;
+  detail: string | null;
+  created_at: string | null;
+}
+
+export interface AuditResponse {
+  entries: AuditEntry[];
+  total: number;
+  summary: Record<string, number>;
+}
 
 export interface Source {
   record_id: string;
@@ -135,7 +208,9 @@ export interface ResourceStatus {
   bandwidth_kbps: number;
   api_quota_remaining: number;
   ollama_loaded: boolean;
+  /** ok | model_missing | degraded | unknown */
   ollama_status: string;
+  ollama_detail: string | null;
   ollama_last_latency_ms: number | null;
   bandwidth_scenario: string;
   sampled_at: string | null;
@@ -281,11 +356,70 @@ export class ApiError extends Error {
   }
 }
 
+export function apiBase(): string {
+  return "/api/v1";
+}
+
+/**
+ * Download a student's eligibility report.
+ *
+ * Deliberately not a plain <a href>: the access token lives fifteen minutes, and
+ * a link cannot refresh it. A user who leaves the tab open and then clicks
+ * Download would get a 401 page instead of a PDF. This mirrors request()'s
+ * one-shot refresh, then turns the body into a client-side download.
+ */
+export async function downloadEligibilityPdf(studentId: string): Promise<void> {
+  const path = `/placement/eligibility/${encodeURIComponent(studentId)}/report.pdf`;
+  const send = () =>
+    fetch(`/api/v1${path}`, { credentials: "include" });
+
+  let res = await send();
+  if (res.status === 401) {
+    const refreshed = await fetch("/api/v1/auth/refresh", {
+      method: "POST",
+      credentials: "include",
+    });
+    if (refreshed.ok) res = await send();
+  }
+  if (!res.ok) throw new ApiError(res.status, res.statusText);
+
+  const blob = await res.blob();
+  const url = URL.createObjectURL(blob);
+  const link = document.createElement("a");
+  link.href = url;
+  link.download = `${studentId}-eligibility.pdf`;
+  document.body.appendChild(link);
+  link.click();
+  link.remove();
+  URL.revokeObjectURL(url);
+}
+
+/**
+ * One fetch helper for the whole client.
+ *
+ * ``credentials: "include"`` is what carries the httpOnly session cookie; no
+ * token is ever read from JavaScript. A 401 on a normal call is retried once
+ * after hitting /auth/refresh, because the access token lives fifteen minutes
+ * and an idle tab should not eject the user back to the login screen. The
+ * refresh call itself is never retried.
+ */
 async function request<T>(path: string, init?: RequestInit): Promise<T> {
-  const res = await fetch(`/api/v1${path}`, {
-    headers: { "Content-Type": "application/json" },
-    ...init,
-  });
+  const send = () =>
+    fetch(`/api/v1${path}`, {
+      credentials: "include",
+      headers: { "Content-Type": "application/json" },
+      ...init,
+    });
+
+  let res = await send();
+  if (res.status === 401 && !path.startsWith("/auth/")) {
+    const refreshed = await fetch("/api/v1/auth/refresh", {
+      method: "POST",
+      credentials: "include",
+    });
+    if (refreshed.ok) res = await send();
+  }
+
   if (!res.ok) {
     let detail = res.statusText;
     try {
@@ -296,14 +430,28 @@ async function request<T>(path: string, init?: RequestInit): Promise<T> {
     }
     throw new ApiError(res.status, detail);
   }
+  if (res.status === 204) return undefined as T;
   return res.json() as Promise<T>;
 }
 
 export const api = {
+  /** The four auth calls that are not "just another API resource". */
+  login: (payload: { username: string; password: string }) =>
+    request<AuthResponse>("/auth/login", {
+      method: "POST",
+      body: JSON.stringify(payload),
+    }),
+
+  logout: () => request<{ ok: boolean; revoked: boolean }>("/auth/logout", { method: "POST" }),
+
+  me: () => request<MeResponse>("/auth/me"),
+
   ask: (payload: {
     question: string;
+    /** Ignored by the server; the student scope comes from the session. */
     user_id?: string | null;
-    role: Role;
+    /** Deprecated: the role comes from the session. */
+    role?: Role;
   }) =>
     request<AskResponse>("/ask", {
       method: "POST",
@@ -320,10 +468,9 @@ export const api = {
     }),
 
   /** Staff cohort-query audit trail (item 7). Staff role only. */
-  cohortQueries: (params: { limit?: number; requester_role: Role }) => {
+  cohortQueries: (params: { limit?: number } = {}) => {
     const qs = new URLSearchParams();
     if (params.limit) qs.set("limit", String(params.limit));
-    qs.set("requester_role", params.requester_role);
     return request<CohortQuery[]>(`/placement/cohort-queries?${qs.toString()}`);
   },
 
@@ -331,11 +478,9 @@ export const api = {
   retrain: () =>
     request<RetrainResponse>("/router/retrain", { method: "POST" }),
 
-  history: (params: { limit?: number; user_id?: string | null; requester_role: Role }) => {
+  history: (params: { limit?: number } = {}) => {
     const qs = new URLSearchParams();
     if (params.limit) qs.set("limit", String(params.limit));
-    if (params.user_id) qs.set("user_id", params.user_id);
-    qs.set("requester_role", params.requester_role);
     return request<
       Array<{
         request_id: string;
@@ -416,8 +561,6 @@ export const api = {
     company?: string;
     role?: string;
     role_id?: number;
-    user_id?: string | null;
-    requester_role: Role;
   }) => {
     const qs = new URLSearchParams();
     for (const [k, v] of Object.entries(params)) {
@@ -434,7 +577,7 @@ export const api = {
       body: JSON.stringify(payload),
     }),
 
-  skillGap: (studentId: string, params: { company?: string; role?: string; user_id?: string | null; requester_role: Role }) => {
+  skillGap: (studentId: string, params: { company?: string; role?: string } = {}) => {
     const qs = new URLSearchParams();
     for (const [k, v] of Object.entries(params)) {
       if (v !== undefined && v !== null && v !== "") qs.set(k, String(v));
@@ -442,6 +585,35 @@ export const api = {
     return request<SkillGapResponse>(
       `/placement/skill-gap/${studentId}?${qs.toString()}`
     );
+  },
+
+  /** Admin console. Every call is audited and admin-only on the server. */
+  adminUsers: (params: { limit?: number; role?: Role } = {}) => {
+    const qs = new URLSearchParams();
+    if (params.limit) qs.set("limit", String(params.limit));
+    if (params.role) qs.set("role", params.role);
+    return request<UserOut[]>(`/admin/users?${qs.toString()}`);
+  },
+
+  adminPatchUser: (
+    userId: string,
+    payload: {
+      is_active?: boolean;
+      role?: Role;
+      password?: string;
+      assignments?: Array<{ scope_kind: string; scope_value: string }>;
+    }
+  ) =>
+    request<UserOut>(`/admin/users/${userId}`, {
+      method: "PATCH",
+      body: JSON.stringify(payload),
+    }),
+
+  adminAudit: (params: { limit?: number; denied_only?: boolean } = {}) => {
+    const qs = new URLSearchParams();
+    if (params.limit) qs.set("limit", String(params.limit));
+    if (params.denied_only) qs.set("denied_only", "true");
+    return request<AuditResponse>(`/admin/audit?${qs.toString()}`);
   },
 
   whatIf: (payload: {

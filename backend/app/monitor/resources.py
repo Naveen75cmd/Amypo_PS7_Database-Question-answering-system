@@ -173,10 +173,12 @@ class ResourceMonitor:
         snap = self.sample()
         loaded = False
         ollama_status = "unknown"
+        ollama_detail = None
         last_latency = None
         if llm is not None:
             ollama_status = llm.status()
             loaded = ollama_status == "ok"
+            ollama_detail = llm.status_detail()
             last_latency = llm.last_latency_ms
         return ResourceStatus(
             ram_available_mb=snap.ram_available_mb,
@@ -185,6 +187,7 @@ class ResourceMonitor:
             api_quota_remaining=snap.api_quota_remaining,
             ollama_loaded=loaded,
             ollama_status=ollama_status,
+            ollama_detail=ollama_detail,
             ollama_last_latency_ms=last_latency,
             bandwidth_scenario=snap.bandwidth_scenario,
             sampled_at=snap.sampled_at,

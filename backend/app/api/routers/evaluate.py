@@ -10,8 +10,10 @@ from __future__ import annotations
 
 import logging
 
-from fastapi import APIRouter, HTTPException
+from fastapi import APIRouter, Depends, HTTPException
 
+from ...auth import deps
+from ...auth.principal import ROLE_ADMIN, Principal
 from ...core.schemas import EvalRunRequest, EvalRunResponse
 
 log = logging.getLogger(__name__)
@@ -20,7 +22,10 @@ router = APIRouter(tags=["eval"])
 
 
 @router.post("/eval/run", response_model=EvalRunResponse, summary="Run the benchmark suite")
-def run_eval(payload: EvalRunRequest) -> EvalRunResponse:
+def run_eval(
+    payload: EvalRunRequest,
+    principal: Principal = Depends(deps.require(ROLE_ADMIN, action="eval.run")),
+) -> EvalRunResponse:
     from ...eval.harness import EvalOptions, run_harness, to_eval_response
 
     options = EvalOptions(
@@ -30,6 +35,11 @@ def run_eval(payload: EvalRunRequest) -> EvalRunResponse:
         include_scenarios=True,
         include_sweeps=True,
         include_load_test=False,  # `make eval` covers the 20-user load test
+        # The red-team suite posts 161 cases through the real app, so with a
+        # model loaded it costs minutes -- too long for a click. It runs in
+        # `make eval`, where the report needs its leak count; the response
+        # schema here has no field for it either.
+        include_access_control=False,
         write_report=payload.write_report,
     )
     try:

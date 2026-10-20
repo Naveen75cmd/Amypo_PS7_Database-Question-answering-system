@@ -32,6 +32,7 @@ NEEDED_KEYS = {
     "load_test",
     "failure_analysis",
     "resources",
+    "access_control",
     "headline",
 }
 
@@ -53,6 +54,40 @@ def report() -> dict:
             write_report=False,
         )
     )
+
+
+def test_access_control_red_team_reports_zero_leaks(report) -> None:
+    """Phase 9, item 5: 30+ prompts and requests per role, leak count in the report."""
+    access = report["access_control"]
+    assert access["ran"] is True
+    assert access["leaks"] == 0, [f for f in access["failures"]]
+    assert access["inconclusive_count"] == 0, access["inconclusive"]
+    assert access["skipped_count"] == 0, access["skipped"]
+    assert access["passed"] is True
+    # The plan's size requirement, counted from cases that really ran.
+    for role in ("student", "staff", "admin"):
+        bucket = access["per_role"][role]
+        assert bucket["cases"] >= 30, (role, bucket)
+        assert bucket["cases"] == bucket["prompts"] + bucket["requests"]
+    # Every attack vector was actually exercised, and the prompt cases really
+    # came back with answers to inspect — a suite that 401'd its own prompts
+    # would otherwise "pass" while proving nothing.
+    assert access["by_vector"]["prompt_injection"]["cases"] >= 10
+    assert access["by_vector"]["role_matrix"]["cases"] > 0
+    assert access["by_vector"]["forged_credentials"]["cases"] > 0
+    assert access["prompts_answered"] > 0
+    assert access["prompts_unexpected"] == 0
+    assert report["headline"]["access_control_leaks"] == 0
+    assert report["headline"]["access_control_pass"] is True
+
+
+def test_red_team_catalogue_alone_meets_the_30_case_rule() -> None:
+    """Countable without running: the plan fixes the size, not just the result."""
+    from app.eval.access_control import cases_per_role
+
+    counts = cases_per_role()
+    for role in ("student", "staff", "admin"):
+        assert counts[role] >= 30, (role, counts[role])
 
 
 def test_harness_produces_every_report_block(report) -> None:
@@ -108,6 +143,114 @@ def test_threshold_sweeps_carry_the_chosen_operating_point(report) -> None:
     ram = sweeps["ram_floor"]
     assert {p["floor_mb"] for p in ram["points"]} == {512, 900, 1500, 2600, 4096}
     assert sum(1 for p in ram["points"] if p["is_current"]) == 1
+    # The relevance floor is the knob the model card's accuracy-vs-hallucination
+    # argument cites, so the report must carry its curve, not just prose.
+    relevance = sweeps["relevance_floor"]
+    assert relevance["chosen_point"] is not None
+    assert relevance["chosen_point"]["accuracy"] == report["answers"]["accuracy"]
+    assert relevance["chosen_point"]["hallucinated"] == report["answers"]["hallucinated"]
+    # The sweep must start from the gate switched off, so the report shows what
+    # the floor buys rather than only points above it.
+    assert relevance["points"][0]["floor"] == 0.0
+
+
+def _fake_gate_pipeline(scores: dict[str, float]) -> object:
+    """A pipeline whose only behaviour is the relevance gate.
+
+    Each question has a fixed best-BM25 score, and the stub abstains exactly
+    when that score is below ``settings.retrieval_relevance_floor`` -- the same
+    rule ``AskPipeline`` applies *before* generation, which is what makes the
+    sweep a real measurement rather than a re-derivation.
+    """
+    from types import SimpleNamespace
+
+    from app.core.settings import settings
+
+    class _Pipeline:
+        def answer(self, question: str, user_id=None, role=None, force_extractive=False):
+            relevance = scores[question]
+            gated = relevance < settings.retrieval_relevance_floor
+            if gated:
+                return SimpleNamespace(
+                    abstained=True,
+                    answer="Not in the corpus.",
+                    confidence=0.0,
+                    sources=[],
+                    retrieval=[{"record_id": "r0", "bm25_score": relevance}],
+                    grounding=SimpleNamespace(
+                        groundedness=0.0,
+                        supported_claims=0,
+                        total_claims=0,
+                        numeric_violations=[],
+                    ),
+                )
+            # Every stub item's expected answer is the text below, so the scorer
+            # calls it correct whenever the gate lets it through.
+            return SimpleNamespace(
+                abstained=False,
+                answer=f"minimum attendance is 75% [S1] ({question})",
+                confidence=0.95,
+                sources=[SimpleNamespace(record_id=f"gold-{question}")],
+                retrieval=[{"record_id": f"gold-{question}", "bm25_score": relevance}],
+                grounding=SimpleNamespace(
+                    groundedness=1.0,
+                    supported_claims=1,
+                    total_claims=1,
+                    numeric_violations=[],
+                ),
+            )
+
+    return _Pipeline()
+
+
+def test_relevance_sweep_measures_each_floor_with_a_real_pass(monkeypatch) -> None:
+    """Raising the floor can only withhold answers, and each point is measured."""
+    from app.core.settings import settings
+    from app.eval.benchmark import BenchmarkItem
+    from app.eval.harness import EvalOptions, _NoRouteEngine, _answer_pass, _relevance_sweep
+
+    monkeypatch.setattr(settings, "retrieval_relevance_floor", 9.0)
+    expected = "minimum attendance is 75%"
+    items = [
+        BenchmarkItem("a1", "answered high", expected, ["gold-answered high"]),
+        BenchmarkItem("a2", "answered low", expected, ["gold-answered low"]),
+        BenchmarkItem("u1", "hallucinated high", expected, ["gold-hallucinated high"], answerable=False),
+        BenchmarkItem("u2", "hallucinated low", expected, ["gold-hallucinated low"], answerable=False),
+    ]
+    pipeline = _fake_gate_pipeline(
+        {
+            "answered high": 20.0,
+            "answered low": 11.0,
+            "hallucinated high": 15.0,
+            "hallucinated low": 9.5,
+        }
+    )
+
+    # The delivered pass at the shipped floor is what the sweep reuses.
+    summary, _rows, _cited = _answer_pass(pipeline, _NoRouteEngine(), items, EvalOptions())
+    sweep = _relevance_sweep(pipeline, items, EvalOptions(), summary)
+
+    floors = [p["floor"] for p in sweep["points"]]
+    assert floors == sorted(floors) and floors[0] == 0.0
+    assert sweep["chosen"] == 9.0
+    assert sweep["chosen_point"]["accuracy"] == summary["accuracy"]
+    assert sweep["chosen_point"]["hallucinated"] == summary["hallucinated"]
+
+    gate_off = sweep["points"][0]
+    assert (gate_off["answered"], gate_off["correct"]) == (2, 2)
+    assert gate_off["abstention_rate_unanswerable"] == 0.0
+    assert gate_off["hallucinated"] == 2
+
+    at_12 = next(p for p in sweep["points"] if p["floor"] == 12.0)
+    assert (at_12["answered"], at_12["correct"]) == (1, 1)  # the 11.0 answer is withheld
+    assert at_12["accuracy"] == 0.5
+    assert at_12["hallucinated"] == 1  # only the 15.0 hallucination survives
+    assert at_12["abstention_rate_unanswerable"] == 0.5
+
+    for earlier, later in zip(sweep["points"], sweep["points"][1:]):
+        assert later["answered"] <= earlier["answered"]
+        assert later["hallucinated"] <= earlier["hallucinated"]
+        assert later["abstention_rate_unanswerable"] >= earlier["abstention_rate_unanswerable"]
 
 
 def test_failure_analysis_lists_at_most_ten_worst(report) -> None:

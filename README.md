@@ -52,16 +52,81 @@ Open <http://localhost:3000>. API docs are at
 docker compose up
 ```
 
+That also pulls `phi3:mini` into the Ollama **container** through the one-shot
+`ollama-pull` service, so the model is there on a fresh machine without a manual
+step (`make models` re-runs it at any time). The container has its own model
+store: `ollama pull phi3:mini` run in Windows PowerShell fills the host's
+`%USERPROFILE%\.ollama`, which the backend never reads, so the dashboard card
+still says **model not pulled**. That is the single most common setup mistake,
+and the card now names the command that fixes it.
+
+> If something else on the machine already owns port **11434** (a system-wide
+> Ollama, for instance), compose aborts while creating its own `ollama` service
+> with `bind: Only one usage of each socket address`. The API, the database and
+> the web app are unaffected — bring them up without that fourth service:
+>
+> ```bash
+> docker compose up -d --no-deps backend frontend
+> ```
+>
+> The backend then reports `llm: degraded` and answers through the extractive
+> fallback, which is exactly the offline behaviour the demo already shows.
+
+## Sign in
+
+The app has one entry point: `/login`. Every other page redirects there without
+a session and returns you to the page you wanted afterwards. Login is local —
+bcrypt password hashes, a short-lived JWT and a revocable refresh token, both in
+httpOnly cookies — and there is no external identity provider.
+
+The role is read from the signed token on every request. It is never taken from
+the question text, a query parameter or the `user_id` field, and it is enforced
+in route dependencies, in the retrieval filter and in the SQL templates. The
+model is never asked to enforce it.
+
+| Role | Sees | Does |
+|---|---|---|
+| **Student** | Public documents, own grades, attendance, schedule, own placement | Ask about their own record; see own eligibility, skill gap and what-if |
+| **Staff** | Public **and staff-only** documents, records of their assigned departments | Cohort placement queries, criteria edits for assigned companies, read-only dashboard |
+| **Admin** | Everything, including admin-only documents | Accounts, ingestion, router settings, scoring weights, dashboard, evaluation, audit log |
+
+Demo accounts (seeded when `AMYPO_DEMO_MODE=true`, password `amypo-demo-2026`):
+
+| Username | Role | Scope |
+|---|---|---|
+| `admin` | admin | everything |
+| `staff.cse` | staff | Computer Science cohort |
+| `staff.ece` | staff | Electronics and Communication cohort |
+| `staff.mech` | staff | Mechanical cohort |
+| `s101` … `s400` | student | that student's own records |
+| `harness` | eval | read-only, public documents only |
+
+The organisers' evaluation harness has two ways in: log in as `harness`, or set
+`AMYPO_SERVICE_API_KEY` and send it as `X-API-Key`. Either way the scope is
+read-only public data. `/health` and `/resource-status` stay open, so a harness
+that only checks liveness needs no credentials at all.
+
 ## Verify it works
 
 ```bash
 cd backend && python -m pytest          # all tests, with the offline guard
-curl http://127.0.0.1:8000/api/v1/health
-curl -X POST http://127.0.0.1:8000/api/v1/ask \
+curl http://127.0.0.1:8000/api/v1/health          # open, no auth
+curl http://127.0.0.1:8000/api/v1/resource-status # open, no auth
+
+# Everything else needs a session. Get a token, then ask:
+TOKEN=$(curl -s -X POST http://127.0.0.1:8000/api/v1/auth/login \
   -H "Content-Type: application/json" \
-  -d '{"question":"What is the minimum attendance required to sit exams?","user_id":"S102"}'
-curl http://127.0.0.1:8000/api/v1/resource-status
+  -d '{"username":"s102","password":"amypo-demo-2026"}' | python -c 'import json,sys;print(json.load(sys.stdin)["access_token"])')
+
+curl -X POST http://127.0.0.1:8000/api/v1/ask \
+  -H "Content-Type: application/json" -H "Authorization: Bearer $TOKEN" \
+  -d '{"question":"What is the minimum attendance required to sit exams?"}'
 ```
+
+For a hand-run acceptance pass — every screen, the exact question to type and
+what you should see — follow [docs/manual_test.md](docs/manual_test.md) (45
+checks with ids, plus a 10-minute smoke path and a triage table). The same plan
+is generated as `docs/manual_test_guide.pdf` by `make guides`.
 
 ### Measure it
 
@@ -85,8 +150,9 @@ make eval -- --limit 40 --no-load-test     # quick run
 
 It replays the 168-question benchmark through the real pipeline and writes
 `docs/eval/report.html` (self-contained: headline metrics, the dense/BM25/hybrid/
-hybrid+rerank and with/without-verifier ablations, verifier/cache/RAM-floor
-threshold sweeps with an accuracy-vs-hallucination plot, the six resource
+hybrid+rerank and with/without-verifier ablations, verifier/relevance-floor/
+cache/RAM-floor threshold sweeps with an accuracy-vs-hallucination plot, the
+six resource
 scenarios with pass/fail, the 20-user load test, peak RSS against the 8 GB
 budget, and the 10 worst questions with cause and fix) plus
 `docs/eval/report.json` with the raw numbers. The same run is reachable from the
@@ -94,13 +160,15 @@ frontend's Evaluation page (`POST /api/v1/eval/run`).
 
 With the deterministic extractive fallback (no model pulled), the answer harness
 currently reports 135/145 answerable questions answered (120 of them with a
-citation), 75.9 % accuracy, and 14/23 unanswerable questions correctly abstained
-— 5.4 % of all questions still hallucinated. Two mechanisms decide that: the
+citation), 75.2 % accuracy, and 9/23 unanswerable questions correctly abstained
+— 8.3 % of all questions still hallucinated. Two mechanisms decide that: the
 claim verifier, and a relevance gate that abstains *before* generation when the
 best BM25 score retrieval produced is below `retrieval_relevance_floor`. That
-gate is what cut hallucinations from 7.7 % to 5.4 % without giving up a single
-correct answer; the questions still answered anyway are listed with their cause
-in the report's failure analysis.
+gate's own sweep in the report — one real answer pass per floor — is where its
+worth is visible: gate off, 10.1 % hallucination at 26.1 % abstention; the
+shipped 9.0, 8.3 % and 39.1 % with no correct answer lost; 12.0, 3.0 % and
+78.3 % for three correct answers. The questions still answered anyway are
+listed with their cause in the report's failure analysis.
 
 ## Submission artefacts
 
@@ -109,12 +177,15 @@ drift from the code:
 
 ```bash
 make artefacts        # or: python scripts/make_artifacts.py
+make guides           # or: python scripts/make_guides.py
 ```
 
 | Artefact | What it is |
 |---|---|
 | `docs/architecture.png` / `.pdf` | Component diagram (UI → API → router/monitor → retrieval/cache → LLM/verifier/placement → MySQL/index/eval) |
 | `docs/final_summary.pdf` | One page: problem, approach, innovations, and the headline numbers pulled from the last `docs/eval/report.json` |
+| `docs/product_guide.pdf` | Product and engineering guide: one request end to end, every model and threshold, the datasets, the module map and the measured results |
+| `docs/user_manual.pdf` | User manual: sign in, ask, read an answer, what each role can do, troubleshooting |
 | `docs/postman_collection.json` | Postman v2.1 collection derived from `openapi.yaml` (import, set `baseUrl`, run) |
 | `docs/model_card.md` | Models, licences, training data, thresholds, footprint, failure modes |
 | `docs/demo_script.md` | The 3–5 minute walkthrough with its exact click path |
@@ -178,6 +249,8 @@ throwaway `amypo_test` schema so it never disturbs the seeded `amypo` database.
 | Symptom | Cause and fix |
 |---|---|
 | `can't connect to MySQL` | `docker compose up -d --wait mysql` (or `make db`), then `make seed ingest index` |
+| Dashboard says **model not pulled** | The Ollama the backend uses has no `phi3:mini`. With compose that is the container's own store, not the host's: `docker compose run --rm ollama-pull` (or `make models`). Running `ollama pull` in PowerShell only fills the host store |
+| Dashboard says **unavailable** | The backend cannot reach Ollama at all: `docker compose up -d ollama`, or start `ollama serve` for a host-run backend |
 | `/api/v1/ask` answers say "offline mode" | Ollama is down or `phi3:mini` is not pulled: `ollama serve`, `ollama pull phi3:mini` |
 | Answers quote evidence instead of generating | RAM below the 900 MB floor with the model resident, or the model is unavailable. This is the three-tier fallback working, not a fault |
 | `index is empty` | Run `python -m app.ingest --path ../data/raw --structured ../data/synthetic` |

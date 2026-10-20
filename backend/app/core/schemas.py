@@ -44,8 +44,18 @@ class Complexity(str, Enum):
 
 
 class Role(str, Enum):
+    """Roles an account can hold.
+
+    ``admin`` is the system role (users, ingestion approval, router settings,
+    monitoring, audit) and ``eval`` is the read-only machine account the
+    organisers' harness authenticates as. The role on a request body is
+    deprecated: from Phase 11 the role always comes from the verified token.
+    """
+
     student = "student"
     staff = "staff"
+    admin = "admin"
+    eval = "eval"
 
 
 # --------------------------------------------------------------------------
@@ -77,8 +87,20 @@ class Criterion(BaseModel):
 
 class AskRequest(BaseModel):
     question: str = Field(min_length=1)
-    user_id: str | None = Field(default=None, description="e.g. S102; drives access scope")
-    role: Role = Role.student
+    user_id: str | None = Field(
+        default=None,
+        description=(
+            "Deprecated: the student scope comes from the session token. A student "
+            "cannot widen it here, and a staff/admin use of this field is audited."
+        ),
+    )
+    role: Role | None = Field(
+        default=None,
+        description=(
+            "Deprecated and ignored. Kept in the schema so existing clients do not "
+            "break; the role is read from the verified token."
+        ),
+    )
     top_k: int | None = None
     complexity_hint: Complexity | None = None
 
@@ -229,8 +251,9 @@ class RouteRequest(BaseModel):
     request_id: str | None = None
     query: str = Field(min_length=1)
     complexity_hint: Complexity | None = None
+    # Deprecated, same rule as AskRequest: identity and role come from the token.
     user_id: str | None = None
-    role: Role = Role.student
+    role: Role | None = None
     execute: bool = Field(
         default=True,
         description="True: route then run the chosen path. False: decision only.",
@@ -263,7 +286,11 @@ class ResourceStatus(BaseModel):
     api_quota_remaining: int
     # --- additive -------------------------------------------------------
     ollama_loaded: bool = False
+    # ok | model_missing | degraded | unknown -- "model_missing" means the
+    # server answered but the configured model is not in its store, which is a
+    # different fix (pull) from an unreachable server.
     ollama_status: str = "unknown"
+    ollama_detail: str | None = None
     ollama_last_latency_ms: float | None = None
     bandwidth_scenario: str = "stable"
     sampled_at: str | None = None
@@ -523,6 +550,130 @@ class EvalRunResponse(BaseModel):
     peak_ram_mb: float
     report_path: str | None = None
     per_kind: dict[str, Any] = Field(default_factory=dict)
+
+
+# --------------------------------------------------------------------------
+# Authentication and administration
+# --------------------------------------------------------------------------
+
+
+class AssignmentIn(BaseModel):
+    """One thing a staff account is allowed to look at."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    scope_kind: Literal["department", "cohort", "company"]
+    scope_value: str = Field(min_length=1, max_length=191)
+
+
+class UserOut(BaseModel):
+    """An account as the API returns it: never the password hash."""
+
+    model_config = ConfigDict(extra="ignore")
+
+    id: str
+    username: str
+    email: str
+    role: Role
+    student_id: str | None = None
+    department: str | None = None
+    cohort: str | None = None
+    is_active: bool = True
+    created_at: str | None = None
+    last_login: str | None = None
+
+
+class LoginRequest(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    username: str = Field(min_length=1, description="Username or email")
+    password: str = Field(min_length=1)
+
+
+class AuthResponse(BaseModel):
+    """A session.
+
+    The bearer token is returned for CLI clients; the web app never reads it,
+    because the same value also arrives as an httpOnly cookie.
+    """
+
+    model_config = ConfigDict(extra="forbid")
+
+    access_token: str
+    token_type: str = "bearer"
+    expires_in: int = Field(description="Access-token lifetime in seconds")
+    user: UserOut
+
+
+class MeResponse(BaseModel):
+    """Who the caller is and what that role may do, straight from the token."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    user: UserOut
+    role: Role
+    cache_scope: str
+    student_id: str | None = None
+    departments: list[str] = Field(default_factory=list)
+    cohorts: list[str] = Field(default_factory=list)
+    assignments: list[dict[str, Any]] = Field(default_factory=list)
+    # Capability names the UI uses to show or hide navigation. The backend does
+    # not trust these; they exist so the UI does not have to duplicate the rule.
+    permissions: dict[str, bool] = Field(default_factory=dict)
+
+
+class AdminUserCreate(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    username: str = Field(min_length=3, max_length=64)
+    email: str = Field(min_length=3, max_length=191)
+    password: str = Field(min_length=8)
+    role: Role
+    student_id: str | None = None
+    department: str | None = None
+    cohort: str | None = None
+    assignments: list[AssignmentIn] = Field(default_factory=list)
+
+
+class AdminUserPatch(BaseModel):
+    """Any subset of: enable/disable, change role, reset password, reassign."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    is_active: bool | None = None
+    role: Role | None = None
+    student_id: str | None = None
+    password: str | None = Field(default=None, min_length=8)
+    assignments: list[AssignmentIn] | None = None
+
+
+class PasswordResetRequest(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    password: str = Field(min_length=8)
+
+
+class AuditEntry(BaseModel):
+    model_config = ConfigDict(extra="ignore")
+
+    id: int
+    actor_id: str | None = None
+    actor_role: str | None = None
+    action: str
+    target: str | None = None
+    scope: str | None = None
+    ip: str | None = None
+    allowed: bool
+    detail: str | None = None
+    created_at: str | None = None
+
+
+class AuditResponse(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    entries: list[AuditEntry]
+    total: int
+    summary: dict[str, int] = Field(default_factory=dict)
 
 
 # Resolve the forward reference in RouteResponse.

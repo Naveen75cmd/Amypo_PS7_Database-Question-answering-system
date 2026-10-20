@@ -1,26 +1,38 @@
 """Placement eligibility, matching, skill gaps and what-if simulation.
 
 These are the staff console's data endpoints (``/ask`` is the student-facing
-channel). Access follows the same rule as the rest of the system: a caller in a
-student role may only see their own record, while a staff role may run cohort
-queries — and every cohort query is written to ``cohort_queries`` so a query over
-many students' records is an auditable event.
+channel). Access follows the same rule as the rest of the system: a student may
+only see their own record, staff may run cohort queries over the departments
+they are assigned to, and every cohort query is written to ``cohort_queries`` so
+a query over many students' records is an auditable event.
+
+Phase 11: the role and the student id come from the verified token. The old
+``requester_role`` and ``user_id`` query parameters are gone -- a student could
+send ``?requester_role=staff`` and read the cohort tools, which is exactly the
+hole this closes.
 """
 
 from __future__ import annotations
 
 import logging
 
-from fastapi import APIRouter, HTTPException, Query
+from fastapi import APIRouter, Depends, HTTPException, Query, Request
 from fastapi.responses import Response
 
+from ...auth import deps
+from ...auth.principal import (
+    ROLE_ADMIN,
+    ROLE_STAFF,
+    Principal,
+    may_read_student,
+)
+from ...auth.service import record_audit
 from ...core.container import get_container
 from ...core.schemas import (
     CohortQuery,
     EligibilityResponse,
     MatchRequest,
     MatchResponse,
-    Role,
     SkillGapResponse,
     WhatIfRequest,
     WhatIfResponse,
@@ -30,6 +42,8 @@ router = APIRouter(tags=["placement"])
 
 log = logging.getLogger(__name__)
 
+_require_staff = deps.require(ROLE_STAFF, ROLE_ADMIN, action="placement.cohort")
+
 
 def _engine():
     try:
@@ -38,16 +52,46 @@ def _engine():
         raise HTTPException(status_code=503, detail=f"placement unavailable: {exc}") from exc
 
 
-def _is_staff(role: Role) -> bool:
-    return role == Role.staff
+def _client_ip(request: Request) -> str:
+    return request.client.host if request.client else "unknown"
 
 
-def _deny_cohort(role: Role) -> None:
-    if not _is_staff(role):
+def _own_student(principal: Principal, requested: str | None) -> str:
+    """The student id a request may act on, or 403.
+
+    A student's scope is fixed to the id in their token, so requesting anybody
+    else is refused rather than quietly rewritten.
+    """
+    if principal.is_staff:
+        if not requested:
+            raise HTTPException(status_code=400, detail="student_id is required.")
+        if not may_read_student(principal, requested):
+            raise HTTPException(
+                status_code=403,
+                detail="Not permitted: that student is outside your assigned departments.",
+            )
+        return requested
+    if not principal.student_id:
+        raise HTTPException(status_code=403, detail="Not permitted: no student scope.")
+    if requested and requested != principal.student_id:
+        raise HTTPException(
+            status_code=403, detail="A student may only view their own record."
+        )
+    return principal.student_id
+
+
+def _staff_department(principal: Principal, requested: str | None) -> str | None:
+    """Constrain a cohort query to the staff member's assigned department."""
+    if principal.is_admin:
+        return requested
+    if not requested:
+        return principal.departments[0] if principal.departments else None
+    if requested not in principal.departments:
         raise HTTPException(
             status_code=403,
-            detail="Cohort queries are limited to staff; a student may only see their own eligibility.",
+            detail=f"Not permitted: you are not assigned to {requested}.",
         )
+    return requested
 
 
 @router.get(
@@ -57,7 +101,7 @@ def _deny_cohort(role: Role) -> None:
 )
 def cohort_queries(
     limit: int = Query(default=50, ge=1, le=500),
-    requester_role: Role = Query(default=Role.staff),
+    principal: Principal = Depends(_require_staff),
 ) -> list[CohortQuery]:
     """Every query that ranged over many students' records, newest first.
 
@@ -68,7 +112,6 @@ def cohort_queries(
     """
     from ...db import query
 
-    _deny_cohort(requester_role)
     rows = query(
         """
         SELECT id, kind, query, company, role_title, role_id, department,
@@ -87,7 +130,7 @@ def cohort_queries(
     response_model=list[dict],
     summary="Companies and roles available for placement queries",
 )
-def roles() -> list[dict]:
+def roles(principal: Principal = Depends(deps.get_principal)) -> list[dict]:
     """Role metadata only — no student data, so no cohort audit is needed."""
     engine = _engine()
     return [
@@ -109,25 +152,51 @@ def roles() -> list[dict]:
     summary="Deterministic per-criterion eligibility for a student or role",
 )
 def eligibility(
+    request: Request,
     student_id: str | None = None,
     company: str | None = None,
     role: str | None = None,
     role_id: int | None = None,
     department: str | None = None,
-    user_id: str | None = None,
-    requester_role: Role = Query(default=Role.staff),
+    principal: Principal = Depends(deps.get_principal),
 ) -> EligibilityResponse:
     engine = _engine()
 
-    if student_id and not _is_staff(requester_role) and user_id != student_id:
-        raise HTTPException(
-            status_code=403, detail="A student may only view their own eligibility."
-        )
-    if not student_id:
-        _deny_cohort(requester_role)
+    if principal.is_staff:
+        if student_id:
+            # A single row read: allowed only inside the account's departments,
+            # and audited, because it is one student's record rather than an
+            # aggregate.
+            student_id = _own_student(principal, student_id)
+            record_audit(
+                actor=principal,
+                action="pii.read",
+                allowed=True,
+                target=student_id,
+                scope=principal.cache_scope,
+                ip=_client_ip(request),
+                detail="single-student eligibility",
+            )
+        else:
+            department = _staff_department(principal, department)
+    else:
+        # Without a student id this is a cohort query ("who is eligible for X"),
+        # which is a staff capability. A student asks for their own record by id.
+        if not student_id and any(
+            [company, role, role_id is not None, department]
+        ):
+            raise HTTPException(
+                status_code=403,
+                detail=(
+                    "Cohort queries are limited to staff; a student may only see "
+                    "their own eligibility."
+                ),
+            )
+        student_id = _own_student(principal, student_id)
 
     results = engine.eligibility(
-        student_id=student_id, company=company, role=role, role_id=role_id, department=department
+        student_id=student_id, company=company, role=role, role_id=role_id,
+        department=department,
     )
     if not results and student_id:
         raise HTTPException(status_code=404, detail=f"No record for student {student_id}.")
@@ -142,7 +211,8 @@ def eligibility(
             "eligibility",
             f"eligibility company={company} role={role}",
             company=company, role=role, role_id=role_id, department=department,
-            user_id=user_id, requester_role=requester_role.value, result_count=len(results),
+            user_id=principal.user_id, requester_role=principal.role,
+            result_count=len(results),
         )
     return EligibilityResponse(results=results, total=len(results))
 
@@ -154,10 +224,10 @@ def eligibility(
 )
 def eligibility_report_pdf(
     student_id: str,
+    request: Request,
     company: str | None = None,
     role: str | None = None,
-    user_id: str | None = None,
-    requester_role: Role = Query(default=Role.student),
+    principal: Principal = Depends(deps.get_principal),
 ) -> Response:
     """Render the student's eligibility as a self-contained PDF.
 
@@ -166,10 +236,11 @@ def eligibility_report_pdf(
     """
     from ...placement.export import build_eligibility_pdf, pdf_filename
 
-    if not _is_staff(requester_role) and user_id != student_id:
-        raise HTTPException(
-            status_code=403,
-            detail="A student may only export their own eligibility report.",
+    student_id = _own_student(principal, student_id)
+    if not principal.is_staff:
+        record_audit(
+            actor=principal, action="pii.export", allowed=True, target=student_id,
+            scope=principal.cache_scope, ip=_client_ip(request),
         )
 
     engine = _engine()
@@ -212,14 +283,15 @@ def eligibility_report_pdf(
     response_model=MatchResponse,
     summary="Rank eligible candidates for a role with the reasons why",
 )
-def match(payload: MatchRequest) -> MatchResponse:
+def match(payload: MatchRequest, principal: Principal = Depends(_require_staff)) -> MatchResponse:
     engine = _engine()
+    department = _staff_department(principal, payload.department)
     result = engine.match(
         role_id=payload.role_id,
         company=payload.company,
         role=payload.role,
         top_n=payload.top_n,
-        department=payload.department,
+        department=department,
     )
     if result is None:
         raise HTTPException(
@@ -230,7 +302,8 @@ def match(payload: MatchRequest) -> MatchResponse:
         "match",
         f"match {result.company} {result.role}",
         company=result.company, role=result.role, role_id=result.role_id,
-        department=payload.department, result_count=len(result.candidates),
+        department=department, user_id=principal.user_id,
+        requester_role=principal.role, result_count=len(result.candidates),
     )
     return result
 
@@ -244,14 +317,10 @@ def skill_gap(
     student_id: str,
     company: str | None = None,
     role: str | None = None,
-    user_id: str | None = None,
-    requester_role: Role = Query(default=Role.staff),
+    principal: Principal = Depends(deps.get_principal),
 ) -> SkillGapResponse:
     engine = _engine()
-    if not _is_staff(requester_role) and user_id != student_id:
-        raise HTTPException(
-            status_code=403, detail="A student may only view their own skill gaps."
-        )
+    student_id = _own_student(principal, student_id)
     result = engine.skill_gap(student_id, company=company, role=role)
     if result is None:
         raise HTTPException(status_code=404, detail=f"No record for student {student_id}.")
@@ -263,7 +332,10 @@ def skill_gap(
     response_model=WhatIfResponse,
     summary="Recompute eligibility with overrides, without persisting them",
 )
-def what_if(payload: WhatIfRequest) -> WhatIfResponse:
+def what_if(
+    payload: WhatIfRequest, principal: Principal = Depends(deps.get_principal)
+) -> WhatIfResponse:
+    payload.student_id = _own_student(principal, payload.student_id)
     engine = _engine()
     result = engine.what_if(payload)
     if result is None:

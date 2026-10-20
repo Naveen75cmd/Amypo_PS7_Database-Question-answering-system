@@ -25,7 +25,7 @@ const STARTERS: Record<"student" | "staff", string[]> = {
 };
 
 export default function ChatPage() {
-  const { role, userId } = useRole();
+  const { role } = useRole();
   const [messages, setMessages] = React.useState<ChatMessage[]>([]);
   const [pending, setPending] = React.useState(false);
   const [trace, setTrace] = React.useState<TraceResponse | null>(null);
@@ -58,11 +58,8 @@ export default function ChatPage() {
     setMessages((prev) => [...prev, userMsg]);
     setPending(true);
     try {
-      const res = await api.ask({
-        question,
-        user_id: role === "student" ? userId : null,
-        role,
-      });
+      // No role or user id is sent: the server takes both from the session.
+      const res = await api.ask({ question });
       let claimsSupported: number | undefined;
       let claimsTotal: number | undefined;
       let traceData: TraceResponse | null = null;
@@ -192,7 +189,7 @@ export default function ChatPage() {
                   </p>
                 </div>
                 <div className="flex flex-wrap gap-2">
-                  {STARTERS[role].map((s) => (
+                  {(STARTERS[role === "student" ? "student" : "staff"] ?? STARTERS.staff).map((s) => (
                     <button
                       key={s}
                       onClick={() => ask(s)}

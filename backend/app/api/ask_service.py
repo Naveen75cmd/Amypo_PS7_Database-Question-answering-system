@@ -223,8 +223,20 @@ class AskPipeline:
         request_id: str | None = None,
         mode: str = "hybrid_rerank",
         force_extractive: bool = False,
+        principal=None,
     ) -> PipelineResult:
-        """Answer a question, degrading gracefully rather than failing."""
+        """Answer a question, degrading gracefully rather than failing.
+
+        ``principal`` is the verified caller. When it is supplied it overrides
+        ``user_id``/``role`` entirely -- a request body cannot widen its own
+        scope -- and the retrieval policy is built from it.
+        """
+        from ..retrieval.index import AccessFilter
+
+        if principal is not None:
+            role = principal.role or role
+            user_id = principal.student_id or (user_id if principal.is_staff else None)
+        policy = AccessFilter.policy_for(principal) if principal is not None else None
         request_id = request_id or uuid.uuid4().hex[:16]
         started = time.perf_counter()
         steps: list[Stage] = []
@@ -247,7 +259,7 @@ class AskPipeline:
         stage = Stage("tools", "Checked structured records")
         tool_results: list[ToolResult] = []
         scoped_entities, denied_student = _scope_entities(
-            understanding.entities, user_id, role
+            understanding.entities, user_id, role, principal=principal
         )
         if not denied_student and understanding.intent in (
             Intent.personal_record,
@@ -318,8 +330,9 @@ class AskPipeline:
         retrieved = self.index.retrieve(
             question, top_k=top_k or settings.final_top_k,
             user_id=user_id, role=role, mode=mode,  # type: ignore[arg-type]
+            policy=policy,
         )
-        allowed = _allowed_scopes(user_id, role)
+        allowed = policy if policy is not None else _allowed_scopes(user_id, role)
         blocked = self._count_blocked(question, allowed)
         stage.finish(
             detail=(
@@ -548,7 +561,7 @@ class AskPipeline:
         best = max(scores) if scores else 0.0
         return best if best > 0.0 else None
 
-    def _count_blocked(self, question: str, allowed: set[str] | None) -> int:
+    def _count_blocked(self, question: str, allowed) -> int:
         """How many otherwise-relevant passages the access filter withheld.
 
         Surfaced in the trace because "you cannot see this" is information the
@@ -557,7 +570,9 @@ class AskPipeline:
         if allowed is None:
             return 0
         try:
-            unrestricted = self.index.retrieve(question, top_k=10, user_id=None, role="staff")
+            # Admin is the highest visibility level, so it is the honest
+            # baseline for "what retrieval would have found without the filter".
+            unrestricted = self.index.retrieve(question, top_k=10, user_id=None, role="admin")
             restricted_ids = {
                 r.record_id for r in self.index.retrieve(
                     question, top_k=10, user_id=None, role="student"
@@ -782,7 +797,7 @@ def _allowed_scopes(user_id: str | None, role: str) -> set[str] | None:
 
 
 def _scope_entities(
-    entities: dict[str, Any], user_id: str | None, role: str
+    entities: dict[str, Any], user_id: str | None, role: str, principal=None
 ) -> tuple[dict[str, Any], bool]:
     """Drop a student id the caller is not allowed to read.
 
@@ -790,9 +805,15 @@ def _scope_entities(
     explicitly requested and removed, so the pipeline can say plainly that the
     record is out of scope rather than pretending it does not exist.
     """
+    student_id = entities.get("student_id")
+    if principal is not None:
+        from ..auth.principal import may_read_student
+
+        if not may_read_student(principal, student_id):
+            return {k: v for k, v in entities.items() if k != "student_id"}, True
+        return entities, False
     if role in settings.staff_roles:
         return entities, False
-    student_id = entities.get("student_id")
     if student_id and student_id != user_id:
         return {k: v for k, v in entities.items() if k != "student_id"}, True
     return entities, False
