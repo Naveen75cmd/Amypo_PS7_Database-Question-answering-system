@@ -23,14 +23,13 @@ the right is the command or request that proves it, run on this machine.
 > selection. This is the run over the access-control retrofit in section F below;
 > the earlier count on this document was 239, and before that 206.
 >
-> **Read this before cloning the tag.** The retrofit — F1–F10 and the Phase 9
-> red-team suite — is working-tree code: `git status` shows 45 modified files and
-> 21 new files, none of them committed. `final` (`de3a7a1`) is therefore the
-> pre-auth submission, and the 206-test run recorded on it predates every auth
-> test. Commit the working tree before submitting if `final` is what the judges
-> will clone. Checked again on 2026-10-20: still uncommitted, so the gap is the
-> commit, not the code — `npm run typecheck` and `npm run build` both pass on this
-> tree (9 app routes, `/login` and `/admin` included).
+> **The retrofit is committed (2026-10-20).** `27726d6` carries F1–F10, the
+> Phase 9 red-team suite, the staff/admin corpus, the generated guides and the
+> manual test plan, and `master` plus the `final-2` tag contain it. The older
+> `final` tag (`de3a7a1`) is still the pre-auth snapshot, and its 206-test run
+> predates every auth test — clone `master` or `final-2`, not `final`. This was
+> checked on the committed tree: `npm run typecheck` and `npm run build` are
+> clean (9 app routes, `/login` and `/admin` included).
 
 > Note: the repository does not contain the PS7 problem statement itself, so the
 > rows below are the "Hard constraints", "Required API contract" and Phase 1–10
