@@ -16,6 +16,7 @@ import {
 import { api } from "@/lib/api";
 import { cn } from "@/lib/utils";
 import { routeLabel } from "@/components/trace-panel";
+import { useRole } from "@/components/providers";
 
 function Tile({
   label,
@@ -114,6 +115,7 @@ function RouterRetrain() {
   // this renders exactly that, and only after a retrain actually ran — before
   // then it says so rather than inventing a baseline.
   const client = useQueryClient();
+  const { permissions } = useRole();
   const retrain = useMutation({
     mutationFn: api.retrain,
     onSuccess: () => client.invalidateQueries({ queryKey: ["metrics"] }),
@@ -134,6 +136,7 @@ function RouterRetrain() {
           </p>
         </div>
         <button
+          hidden={!permissions.router_config}
           onClick={() => retrain.mutate()}
           disabled={retrain.isPending}
           className="rounded-md border px-2.5 py-1 text-xs transition-colors duration-150 hover:bg-muted disabled:opacity-50"
@@ -141,6 +144,12 @@ function RouterRetrain() {
           {retrain.isPending ? "Retraining…" : "Retrain"}
         </button>
       </div>
+
+      {!permissions.router_config && (
+        <p className="mt-2 text-xs text-muted-foreground">
+          Retraining is an administrator action; this dashboard is read-only for your role.
+        </p>
+      )}
 
       {retrain.isError && (
         <p className="mt-2 text-xs text-[var(--destructive)]">
@@ -291,6 +300,7 @@ const SCENARIOS = ["stable", "ram_crash", "quota_exhausted", "ollama_crash", "ba
 
 function DecisionLog() {
   const client = useQueryClient();
+  const { permissions } = useRole();
   const [running, setRunning] = React.useState<string | null>(null);
   const [summary, setSummary] = React.useState<string | null>(null);
   const { data } = useQuery({
@@ -319,19 +329,25 @@ function DecisionLog() {
     <section className="space-y-3">
       <div className="flex flex-wrap items-center gap-2">
         <h2 className="text-[13px] font-medium text-muted-foreground">Scenarios</h2>
-        {SCENARIOS.map((s) => (
-          <button
-            key={s}
-            onClick={() => runScenario(s)}
-            disabled={running !== null}
-            className={cn(
-              "rounded-md border bg-card px-2.5 py-1 text-xs transition-colors duration-150 hover:border-[var(--accent)]",
-              running === s && "opacity-50"
-            )}
-          >
-            {s === "stable" ? "reset to stable" : s.replace(/_/g, " ")}
-          </button>
-        ))}
+        {permissions.simulator ? (
+          SCENARIOS.map((s) => (
+            <button
+              key={s}
+              onClick={() => runScenario(s)}
+              disabled={running !== null}
+              className={cn(
+                "rounded-md border bg-card px-2.5 py-1 text-xs transition-colors duration-150 hover:border-[var(--accent)]",
+                running === s && "opacity-50"
+              )}
+            >
+              {s === "stable" ? "reset to stable" : s.replace(/_/g, " ")}
+            </button>
+          ))
+        ) : (
+          <span className="text-xs text-muted-foreground">
+            Running a scenario simulation is an administrator action.
+          </span>
+        )}
         {running && <span className="text-xs text-muted-foreground">running {running}…</span>}
       </div>
       {summary && (

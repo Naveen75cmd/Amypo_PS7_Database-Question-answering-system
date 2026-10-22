@@ -27,5 +27,10 @@ COPY --from=builder /app/public ./public
 COPY --from=builder /app/.next ./.next
 COPY --from=builder /app/node_modules ./node_modules
 COPY --from=builder /app/package.json ./package.json
+# `next start` reads experimental options (proxyTimeout) from this file at
+# runtime; the rewrites themselves are already baked into .next. Without it the
+# proxy falls back to its 30 s default and a long /eval/run answers 500 in the
+# UI while the backend finishes normally.
+COPY --from=builder /app/next.config.mjs ./next.config.mjs
 EXPOSE 3000
 CMD ["npm", "run", "start"]

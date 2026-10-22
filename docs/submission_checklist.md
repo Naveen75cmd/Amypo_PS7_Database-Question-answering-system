@@ -3,6 +3,41 @@
 Phase 10, submission item 10. Every row is evidence, not intent: the column on
 the right is the command or request that proves it, run on this machine.
 
+> **Verification run (2026-10-22).** `cd backend && python -m pytest tests -q`
+> collects **245 tests** and exits **0** with every mark drawn (72+72+72+29 marks,
+> no `F` or `E`), against the MySQL 8 container. `scripts/e2e_smoke.py --base
+> http://127.0.0.1:3000/api/v1` — i.e. through the frontend's `/api/v1` rewrite,
+> the path the browser uses — reports **46/46 checks passed**; `payload` for
+> `POST /eval/run` is unchanged. `npx tsc --noEmit` is clean. This run is over the
+> three fixes in the paragraph below; the suite must run alone, because two
+> concurrent pytest processes share the one `amypo_test` schema and fail each
+> other's setup.
+>
+> Three defects were found and fixed while re-verifying the Docker path:
+>
+> 1. **The frontend image never shipped `next.config.mjs`.** `next start` reads
+>    `experimental.proxyTimeout` from that file at runtime (the rewrites are
+>    baked into `.next`), so the container fell back to Next's 30 s proxy
+>    default and any `/eval/run` longer than that answered **500 in the UI**
+>    while the backend finished normally. `frontend/Dockerfile` now copies it.
+>    Measured after the fix: `POST /api/v1/eval/run {"limit":120}` through port
+>    3000 returns **200 in 54 s**, and the Evaluation page renders the metrics.
+> 2. **Two dead staff-facing buttons.** The Dashboard rendered `Retrain` and the
+>    scenario buttons for staff, who hold neither `router_config` nor
+>    `simulator` — clicking them was a 403 with no explanation. Both are now
+>    hidden and the page says the action is an administrator one.
+> 3. **The Evaluation page ordered staff to run a benchmark they cannot run.**
+>    The run buttons are now hidden for a read-only role and the page points at
+>    `docs/eval/report.html` instead.
+>
+> Checked in the browser on the rebuilt frontend image: admin sees both
+> Evaluation buttons and a 40-question run renders its metrics; as
+> `staff.cse` the Dashboard shows the two "administrator action" notes with no
+> Retrain or scenario buttons, and `/evaluation` shows the read-only note with
+> no run buttons; as `s102` the nav is Chat + Placement only, a cited answer
+> renders ("75% theory attendance and 80% laboratory attendance", 5 sources,
+> grounded 1/1) and /placement lists the eligible roles.
+>
 > **Verification run (2026-10-20).** `cd backend && python -m pytest tests -q`
 > collects **245 tests** (33 of them the auth/RBAC suite) and exits **0** with
 > every mark drawn, against MySQL 8 from `docker compose up -d --wait mysql`

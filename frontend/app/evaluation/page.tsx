@@ -3,6 +3,7 @@
 import * as React from "react";
 import { useState } from "react";
 import { ApiError, api } from "@/lib/api";
+import { useRole } from "@/components/providers";
 
 type EvalResult = Awaited<ReturnType<typeof api.runEval>>;
 
@@ -22,6 +23,8 @@ const METRICS: Array<{ key: keyof EvalResult; label: string; pct?: boolean }> = 
 ];
 
 export default function EvaluationPage() {
+  const { permissions } = useRole();
+  const canRun = permissions.eval_run;
   const [result, setResult] = React.useState<EvalResult | null>(null);
   const [error, setError] = React.useState<string | null>(null);
   const [busy, setBusy] = useState(false);
@@ -50,7 +53,14 @@ export default function EvaluationPage() {
         <div className="flex flex-wrap items-center gap-3">
           <h1 className="text-base font-semibold tracking-tight">Evaluation</h1>
           <div className="ml-auto flex gap-2">
+            {!canRun && (
+              <span className="text-xs text-muted-foreground">
+                Running the benchmark requires an administrator; you can read the
+                published report at docs/eval/report.html.
+              </span>
+            )}
             <button
+              hidden={!canRun}
               onClick={() => run(40)}
               disabled={busy}
               className="rounded-md border bg-card px-2.5 py-1.5 text-[13px] transition-colors duration-150 hover:border-[var(--accent)] disabled:opacity-50"
@@ -58,6 +68,7 @@ export default function EvaluationPage() {
               Quick run (40)
             </button>
             <button
+              hidden={!canRun}
               onClick={() => run(null)}
               disabled={busy}
               className="rounded-md bg-[var(--accent)] px-2.5 py-1.5 text-[13px] font-medium text-[var(--accent-foreground)] transition-opacity duration-150 hover:opacity-90 disabled:opacity-50"
